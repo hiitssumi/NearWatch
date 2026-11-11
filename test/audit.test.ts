@@ -64,3 +64,61 @@ test("an invalid agent answer is retried, and an agent that never answers validl
   assert.deepEqual(gaveUp.verdicts, { R1: "Unproven", R2: "Unproven" });
   assert.ok(gaveUp.transcript.some((l) => l.includes("attacker gave no valid answer after 2 retries")));
 });
+
+test("the hand-made Recording pays R1's share to the Attacker and returns R2's, the Reporter's and nothing else to the payer", async () => {
+  const payer = new FakePayer();
+  const r = await loadRecording(HAND_MADE);
+  const result = await runAudit(r.contract.path, replayPorts(r, payer));
+  const NEAR = 10n ** 24n;
+  const total = (who: string) =>
+    result.payouts.filter((p) => p.to === who).reduce((s, p) => s + BigInt(p.yoctoNear), 0n);
+
+  assert.equal(total("scout"), (NEAR * 5n) / 100n);
+  assert.equal(total("rules"), (NEAR * 10n) / 100n);
+  assert.equal(total("referee"), (NEAR * 20n) / 100n);
+  assert.equal(total("attacker"), (NEAR * 30n) / 100n);
+  // The Reporter and Prover do not run yet: the Reporter's 5% and Unproven R2's 30% go back.
+  assert.equal(total("reporter"), 0n);
+  assert.equal(total("prover"), 0n);
+  assert.equal(total("payer"), (NEAR * 35n) / 100n);
+  assert.equal(result.payouts.reduce((s, p) => s + BigInt(p.yoctoNear), 0n), NEAR);
+
+  // Calculation is separate from sending: the fake payer recorded exactly what the Ledger worked out.
+  assert.deepEqual(
+    payer.sent,
+    result.payouts.map((p) => ({ agent: p.to, yoctoNear: p.yoctoNear })),
+  );
+  assert.deepEqual(
+    result.payouts.map((p) => p.hash),
+    payer.sent.map((_, i) => `fake-${i + 1}`),
+  );
+
+  assert.ok(result.transcript.includes("== Payouts =="));
+  assert.ok(result.transcript.some((l) => l.includes("SIMULATED") && l.includes("sends nothing")));
+  assert.ok(result.transcript.includes("  attacker: 0.3 NEAR (R1 Broken) [fake-5]"));
+  assert.ok(result.transcript.includes("  payer: 0.3 NEAR (R2 Unproven, its share returned) [fake-6]"));
+});
+
+test("the Referee's Payout is the same whatever the verdicts, and Payouts always sum to the Fee", async () => {
+  const r = await loadRecording(HAND_MADE);
+  r.toolchain[0]!.outcome.ruleCheckTrue = false; // R1 now Unproven too
+  const result = await audit(r);
+  assert.deepEqual(result.verdicts, { R1: "Unproven", R2: "Unproven" });
+  const referee = result.payouts.filter((p) => p.to === "referee");
+  assert.deepEqual(referee.map((p) => p.yoctoNear), [((10n ** 24n * 20n) / 100n).toString()]);
+  assert.equal(result.payouts.reduce((s, p) => s + BigInt(p.yoctoNear), 0n), 10n ** 24n);
+  assert.equal(result.payouts.filter((p) => p.to === "attacker").length, 0);
+});
+
+test("a Rules agent that never answers validly is not paid, and its share and the Rules pool return to the payer", async () => {
+  const r = await loadRecording(HAND_MADE);
+  const bad = { ...r.exchanges[1]!, answer: '{"rules": []}' };
+  r.exchanges = [r.exchanges[0]!, bad, bad, bad];
+  r.toolchain = [];
+  const result = await audit(r);
+  assert.deepEqual(result.verdicts, {});
+  assert.equal(result.payouts.filter((p) => p.to === "rules").length, 0);
+  assert.equal(result.payouts.filter((p) => p.to === "attacker").length, 0);
+  // Rules agent 10% + Reporter 5% + the whole 60% pool.
+  assert.equal(result.payouts.filter((p) => p.to === "payer").reduce((s, p) => s + BigInt(p.yoctoNear), 0n), (10n ** 24n * 75n) / 100n);
+});

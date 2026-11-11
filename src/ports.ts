@@ -23,6 +23,8 @@ export interface PayoutOrder {
 
 export interface Payer {
   readonly describe: string;
+  /** True when nothing is really sent (the fake payer). */
+  readonly simulated?: boolean;
   send(order: PayoutOrder): Promise<{ hash: string }>;
 }
 
