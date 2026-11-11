@@ -51,3 +51,9 @@ Live run (12 Nov 2026), audit of `rust/vaults/buggy` on GLM 5.3:
 - `npm run replay -- audits/live-buggy-1/recording.json` reproduced the live transcript line for line. The Recording holds 4 exchanges and no key. It isn't committed: `audits/` is git-ignored, and ticket 11 picks the Recording that ships.
 
 **Problem for ticket 05/11:** `rust/vaults/buggy/src/lib.rs` has a doc comment naming the planted bug ("The planted bug: `withdraw` lowers the caller's recorded balance..."). The Scout repeated it ("planted bug: e.g. receiver_id does not exist"), so it would reach the Attacker through the source and the Scout's map. That breaks "nothing beyond the bug-class list". Strip those comments from the vault, or from what the agents read, before ticket 05's live run.
+
+Re-runs on the cleaned vault (12 Nov 2026), after ticket 01 removed the planted-bug comments from `src/`:
+- `live-buggy-2` ($0.45): no hint reached the agents, but the Rules agent failed all three tries on the Rule check format (missing slot `describe`, `"lt"` instead of `"<"`), so the run produced no Rules. The cause was the prompt, which described the format only in prose.
+- The fix: the Scout and Rules prompts in `src/agents/agents.ts` now give the exact JSON shape, and the Rules prompt adds a format example for an unrelated contract. A test confirms the example passes the validator.
+- `live-buggy-3` ($0.21): both agents answered validly first time. The Scout noted on its own that withdraw has no callback to restore the balance. The Rules agent wrote 7 Rules, and R4 ("a withdrawal debits exactly what it delivers") covers the planted bug. The replay is identical, and no prompt mentions "buggy" or "planted".
+- For ticket 05: some Rule checks read views the vault doesn't have (`vault_owner`, `paused_flag`), and R6 compares a bool view with `{"number":"1"}`. The harness has to turn such a Scenario into a Lead or a clear error, not a crash.
