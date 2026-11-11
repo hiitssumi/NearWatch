@@ -1,0 +1,23 @@
+# NearWatch Rust workspace: the demo vaults and their sandbox tests.
+[workspace]
+resolver = "2"
+members = ["vaults/buggy", "vaults/fixed", "vaults/tests", "harness"]
+# Contracts only build for wasm (via cargo-near), so plain `cargo test`
+# runs only the sandbox tests, which build the contracts themselves.
+default-members = ["vaults/tests", "harness"]
+
+[workspace.package]
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+near-sdk = "5.30"
+near-workspaces = "0.24"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
