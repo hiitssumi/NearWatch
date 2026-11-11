@@ -1,0 +1,50 @@
+{
+  "note": "Test material only. Made by test/lean/record-outcomes.ts.",
+  "lean": "Lean (version 4.35.0, arm64-apple-darwin24.6.0, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release)",
+  "outcomes": {
+    "accept-R1": {
+      "ok": true,
+      "errors": "",
+      "axioms": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "accept-R2": {
+      "ok": true,
+      "errors": "",
+      "axioms": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "placeholder": {
+      "ok": true,
+      "errors": "",
+      "axioms": [
+        "sorryAx"
+      ]
+    },
+    "added-axiom": {
+      "ok": true,
+      "errors": "",
+      "axioms": [
+        "vault_cheat"
+      ]
+    },
+    "restated": {
+      "ok": false,
+      "errors": "property_R1.lean:42:2: error: Type mismatch\n  Nat.le_refl ?m.18\nhas type\n  ?m.18 ≤ ?m.18\nbut is expected to have type\n  s.balance a + s.received a ≤ (step s c).balance a + (step s c).received a\n'property_R1' depends on axioms: [sorryAx]",
+      "axioms": [
+        "sorryAx"
+      ]
+    },
+    "changed-goal": {
+      "ok": false,
+      "errors": "property_R1.lean:41:2: error: 'show' tactic failed, pattern\n  True\nis not definitionally equal to target\n  ∀ (s : State) (c : Call) (a : Account), s.balance a + s.received a ≤ (step s c).balance a + (step s c).received a\n'property_R1' depends on axioms: [sorryAx]",
+      "axioms": [
+        "sorryAx"
+      ]
+    }
+  }
+}

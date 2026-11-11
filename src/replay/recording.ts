@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
-import type { AgentName, ScenarioOutcome, TokenUse } from "../domain.ts";
+import type { AgentName, LeanOutcome, Property, ScenarioOutcome, TokenUse } from "../domain.ts";
 import type { AuditPorts, LlmAnswer, LlmGateway, Payer, PayoutOrder, Toolchain } from "../ports.ts";
 import { scenarioOutcome } from "../schemas.ts";
-import { amount, anyObject, array, type Check, object, oneOf, str } from "../validate.ts";
+import { amount, anyObject, array, bool, type Check, object, oneOf, str } from "../validate.ts";
 
 /** The stored answers and outcomes of one Audit, from which it can be replayed. */
 export interface Recording {
@@ -13,9 +13,25 @@ export interface Recording {
   /** Every LLM exchange, in order. `answer` may be stored as JSON for hand-written Recordings. */
   exchanges: { agent: AgentName; answer: string; tokens: TokenUse }[];
   /** Every toolchain outcome, in order. */
-  toolchain: { op: "runScenario"; scenario: string; outcome: ScenarioOutcome }[];
+  toolchain: ToolchainEntry[];
   payouts: { agent: string; yoctoNear: string; hash: string }[];
 }
+
+export type ToolchainEntry =
+  | { op: "runScenario"; scenario: string; outcome: ScenarioOutcome }
+  /** `property` is the Rule id of the Property whose proof was checked. */
+  | { op: "checkLean"; property: string; outcome: LeanOutcome };
+
+const leanOutcome: Check<LeanOutcome> = object({
+  ok: bool,
+  errors: (x, q) => (typeof x === "string" ? x : str(x, q)),
+  axioms: array(str),
+});
+
+const toolchainEntry: Check<ToolchainEntry> = (v, p) =>
+  (v as { op?: unknown })?.op === "checkLean"
+    ? object({ op: oneOf("checkLean"), property: str, outcome: leanOutcome })(v, p)
+    : object({ op: oneOf("runScenario"), scenario: str, outcome: scenarioOutcome })(v, p);
 
 const AGENTS = ["scout", "rules", "attacker", "prover", "referee", "reporter"] as const;
 const count: Check<number> = (v, p) => {
@@ -35,7 +51,7 @@ const recordingCheck: Check<Recording> = (v, p) => {
         tokens: object({ input: count, output: count }),
       }),
     ),
-    toolchain: array(object({ op: oneOf("runScenario"), scenario: str, outcome: scenarioOutcome })),
+    toolchain: array(toolchainEntry),
     payouts: array(object({ agent: str, yoctoNear: amount, hash: str })),
   })(v, p);
   if ((v as { format?: unknown }).format !== 1) throw new Error("Recording: unsupported format (expected 1)");
@@ -98,15 +114,34 @@ export class ReplayToolchain implements Toolchain {
         `Replay asked for toolchain outcome #${n + 1} (Scenario "${scenario.id}"), but the Recording holds only ${this.outcomes.length}.`,
       );
     }
-    if (stored.scenario !== scenario.id) {
+    if (stored.op !== "runScenario" || stored.scenario !== scenario.id) {
       throw new ReplayError(
-        `Replay asked for toolchain outcome #${n + 1} for Scenario "${scenario.id}", but the Recording has Scenario "${stored.scenario}" there.`,
+        `Replay asked for toolchain outcome #${n + 1} for Scenario "${scenario.id}", but the Recording has ${describe(stored)} there.`,
+      );
+    }
+    this.next++;
+    return stored.outcome;
+  }
+
+  async checkLean(_formalization: string, property: Property, _proofBody: string): Promise<LeanOutcome> {
+    const n = this.next;
+    const stored = this.outcomes[n];
+    if (!stored) {
+      throw new ReplayError(
+        `Replay asked for toolchain outcome #${n + 1} (proof of ${property.rule}), but the Recording holds only ${this.outcomes.length}.`,
+      );
+    }
+    if (stored.op !== "checkLean" || stored.property !== property.rule) {
+      throw new ReplayError(
+        `Replay asked for toolchain outcome #${n + 1} for the proof of ${property.rule}, but the Recording has ${describe(stored)} there.`,
       );
     }
     this.next++;
     return stored.outcome;
   }
 }
+
+const describe = (e: ToolchainEntry) => (e.op === "runScenario" ? `Scenario "${e.scenario}"` : `the proof of ${e.property}`);
 
 /** Records what it would send and sends nothing. */
 export class FakePayer implements Payer {

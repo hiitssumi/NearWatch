@@ -1,18 +1,21 @@
 // The Referee is ordinary code: no LLM takes part in its decisions.
 
-import type { Finding, Lead, Rule, Scenario, Verdict } from "./domain.ts";
+import type { Finding, Lead, ProofCheck, ProofSubmission, Rule, Scenario, Verdict } from "./domain.ts";
 import type { Toolchain } from "./ports.ts";
+import { checkProof } from "./proof-rules.ts";
 
 export interface RefereeResult {
   verdicts: Record<string, Verdict>;
   findings: Finding[];
   leads: Lead[];
+  /** One entry per submitted proof, accepted or rejected with a reason. */
+  proofs: ProofCheck[];
 }
 
 /**
  * Runs every submitted Scenario through the toolchain itself. A Scenario whose Rule check comes out
  * true is a Finding and its Rule is Broken; any other Scenario becomes a Lead. A Rule with no Finding
- * is Unproven (proofs arrive in a later ticket).
+ * that has a proof accepted by the proof rules (src/proof-rules.ts) is Proven; any other Rule is Unproven.
  */
 export async function referee(
   contractPath: string,
@@ -20,6 +23,7 @@ export async function referee(
   scenarios: Scenario[],
   toolchain: Toolchain,
   log: (line: string) => void,
+  submitted: ProofSubmission = { formalization: "", properties: [], proofs: [] },
 ): Promise<RefereeResult> {
   const byId = new Map(rules.map((r) => [r.id, r]));
   const findings: Finding[] = [];
@@ -48,7 +52,18 @@ export async function referee(
     }
   }
 
+  const proofs: ProofCheck[] = [];
+  for (const proof of submitted.proofs) {
+    const property = submitted.properties.find((p) => p.rule === proof.rule);
+    const check = await checkProof(toolchain, submitted.formalization, property, proof);
+    proofs.push(check);
+    log(`  proof of ${proof.rule}: ${check.accepted ? "ACCEPTED" : "REJECTED"} (${check.reason})`);
+  }
+
+  // A Finding always outranks a proof.
   const broken = new Set(findings.map((f) => f.scenario.rule));
-  const verdicts = Object.fromEntries(rules.map((r): [string, Verdict] => [r.id, broken.has(r.id) ? "Broken" : "Unproven"]));
-  return { verdicts, findings, leads };
+  const proven = new Set(proofs.filter((p) => p.accepted).map((p) => p.rule));
+  const verdict = (id: string): Verdict => (broken.has(id) ? "Broken" : proven.has(id) ? "Proven" : "Unproven");
+  const verdicts = Object.fromEntries(rules.map((r): [string, Verdict] => [r.id, verdict(r.id)]));
+  return { verdicts, findings, leads, proofs };
 }

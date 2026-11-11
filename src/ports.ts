@@ -1,4 +1,4 @@
-import type { AgentName, RuleCheck, Scenario, ScenarioOutcome, TokenUse } from "./domain.ts";
+import type { AgentName, LeanOutcome, Property, RuleCheck, Scenario, ScenarioOutcome, TokenUse } from "./domain.ts";
 
 export interface LlmAnswer {
   answer: string;
@@ -12,6 +12,8 @@ export interface LlmGateway {
 
 export interface Toolchain {
   runScenario(contractPath: string, scenario: Scenario, check: RuleCheck): Promise<ScenarioOutcome>;
+  /** Assembles a Lean file from the three parts, checks it, and returns success or Lean's error text, plus the axioms used. */
+  checkLean(formalization: string, property: Property, proofBody: string): Promise<LeanOutcome>;
 }
 
 export interface PayoutOrder {

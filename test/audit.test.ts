@@ -19,7 +19,9 @@ test("the hand-made Recording ends with Rule 1 Broken and Rule 2 Unproven", asyn
 
 test("a Scenario that does not make the Rule check true ends as a Lead, not a Finding", async () => {
   const r = await loadRecording(HAND_MADE);
-  const outcome = r.toolchain[0]!.outcome;
+  const entry = r.toolchain[0]!;
+  assert.equal(entry.op, "runScenario");
+  const outcome = entry.outcome;
   outcome.ruleCheckTrue = false;
   outcome.observations.after.views.user_recorded = "1000000000000000000000000";
   outcome.observations.failedReceipts = [];

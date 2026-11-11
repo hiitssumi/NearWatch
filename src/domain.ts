@@ -111,3 +111,37 @@ export interface AuditResult {
   tokens: Record<string, TokenUse>;
   transcript: string[];
 }
+
+// ---- Properties and proofs ----
+
+/** A Rule written in Lean. The statement belongs to the Rules agent; the Prover supplies only a proof body. */
+export interface Property {
+  rule: string;
+  statement: string;
+}
+
+export interface Proof {
+  rule: string;
+  body: string;
+}
+
+/** What Lean said about one assembled file. `errors` is Lean's own text, unchanged. */
+export interface LeanOutcome {
+  ok: boolean;
+  errors: string;
+  axioms: string[];
+}
+
+/** The proofs submitted to the Referee, with what they are proofs about. */
+export interface ProofSubmission {
+  formalization: string;
+  properties: Property[];
+  proofs: Proof[];
+}
+
+export interface ProofCheck {
+  rule: string;
+  accepted: boolean;
+  reason: string;
+  outcome?: LeanOutcome;
+}
