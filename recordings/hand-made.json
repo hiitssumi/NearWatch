@@ -1,0 +1,224 @@
+{
+  "format": 1,
+  "commit": "hand-made",
+  "settings": {
+    "note": "Written by hand for ticket 03. Not from a live Audit."
+  },
+  "contract": {
+    "path": "rust/vaults/buggy/src/lib.rs",
+    "source": "// Source not needed for replay of the hand-made Recording.\n"
+  },
+  "exchanges": [
+    {
+      "agent": "scout",
+      "tokens": {
+        "input": 1200,
+        "output": 180
+      },
+      "answer": {
+        "moneyMethods": [
+          "deposit",
+          "withdraw"
+        ],
+        "balanceStorage": [
+          "balances: LookupMap<AccountId, NearToken>"
+        ],
+        "privilegedMethods": [
+          {
+            "method": "set_paused",
+            "whoMayCall": "owner"
+          }
+        ],
+        "standingNote": "Key and upgrade control must be checked on the deployed account: whoever holds a full-access key can replace this code."
+      }
+    },
+    {
+      "agent": "rules",
+      "tokens": {
+        "input": 1500,
+        "output": 420
+      },
+      "answer": {
+        "rules": [
+          {
+            "id": "R1",
+            "text": "A user's recorded balance only goes down by an amount that user actually received.",
+            "check": {
+              "slots": [
+                {
+                  "name": "user_wallet",
+                  "kind": "balance",
+                  "describe": "the user's NEAR account balance"
+                },
+                {
+                  "name": "user_recorded",
+                  "kind": "view",
+                  "describe": "the user's balance as recorded by the contract"
+                },
+                {
+                  "name": "receiver_wallet",
+                  "kind": "balance",
+                  "describe": "the NEAR balance of the account the user withdrew to"
+                }
+              ],
+              "condition": {
+                "compare": ">",
+                "left": {
+                  "op": "sub",
+                  "left": {
+                    "op": "sub",
+                    "left": {
+                      "op": "sub",
+                      "left": {
+                        "slot": "user_wallet",
+                        "when": "before"
+                      },
+                      "right": {
+                        "slot": "user_wallet",
+                        "when": "after"
+                      }
+                    },
+                    "right": {
+                      "op": "sub",
+                      "left": {
+                        "slot": "receiver_wallet",
+                        "when": "after"
+                      },
+                      "right": {
+                        "slot": "receiver_wallet",
+                        "when": "before"
+                      }
+                    }
+                  },
+                  "right": {
+                    "slot": "user_recorded",
+                    "when": "after"
+                  }
+                },
+                "right": {
+                  "number": "100000000000000000000000"
+                }
+              }
+            }
+          },
+          {
+            "id": "R2",
+            "text": "The owner cannot reduce any user's balance.",
+            "check": {
+              "slots": [
+                {
+                  "name": "user_recorded",
+                  "kind": "view",
+                  "describe": "a user's balance as recorded by the contract"
+                }
+              ],
+              "condition": {
+                "compare": "<",
+                "left": {
+                  "slot": "user_recorded",
+                  "when": "after"
+                },
+                "right": {
+                  "slot": "user_recorded",
+                  "when": "before"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "agent": "attacker",
+      "tokens": {
+        "input": 2600,
+        "output": 350
+      },
+      "answer": {
+        "scenarios": [
+          {
+            "id": "S1",
+            "rule": "R1",
+            "bugClass": "state not restored when a cross-contract call or transfer fails",
+            "actions": [
+              {
+                "action": "createAccount",
+                "account": "alice",
+                "balance": "10000000000000000000000000"
+              },
+              {
+                "action": "call",
+                "as": "alice",
+                "method": "deposit",
+                "args": {},
+                "deposit": "1000000000000000000000000",
+                "gas": "30000000000000"
+              },
+              {
+                "action": "call",
+                "as": "alice",
+                "method": "withdraw",
+                "args": {
+                  "amount": "1000000000000000000000000",
+                  "receiver_id": "nobody-here"
+                },
+                "deposit": "0",
+                "gas": "100000000000000"
+              }
+            ],
+            "bind": {
+              "user_wallet": {
+                "account": "alice"
+              },
+              "user_recorded": {
+                "view": {
+                  "method": "balance_of",
+                  "args": {
+                    "account_id": "alice"
+                  }
+                }
+              },
+              "receiver_wallet": {
+                "account": "nobody-here"
+              }
+            }
+          }
+        ],
+        "leads": []
+      }
+    }
+  ],
+  "toolchain": [
+    {
+      "op": "runScenario",
+      "scenario": "S1",
+      "outcome": {
+        "observations": {
+          "before": {
+            "views": {
+              "user_recorded": "0"
+            },
+            "balances": {
+              "user_wallet": "10000000000000000000000000",
+              "receiver_wallet": "0"
+            }
+          },
+          "after": {
+            "views": {
+              "user_recorded": "0"
+            },
+            "balances": {
+              "user_wallet": "8991000000000000000000000",
+              "receiver_wallet": "0"
+            }
+          },
+          "failedReceipts": [
+            "transfer of 1 NEAR to nobody-here: account does not exist"
+          ]
+        },
+        "ruleCheckTrue": true
+      }
+    }
+  ],
+  "payouts": []
+}

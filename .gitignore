@@ -1,0 +1,5 @@
+node_modules/
+/audits/
+settings.local.json
+target/
+.DS_Store
