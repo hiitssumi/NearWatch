@@ -22,12 +22,24 @@ _Avoid_: Theorem, spec, Lean rule
 A description of the contract's behaviour in Lean, written by reading the code. A proof holds for the Formalization, not for the contract itself.
 _Avoid_: Model, Lean model, spec
 
+**Rule check**:
+A comparison over what was observed in the sandbox that is true when a Rule has been broken.
+_Avoid_: Assertion, oracle, test
+
+**Scenario**:
+An ordered list of sandbox actions the Attacker proposes as a way to break a Rule.
+_Avoid_: Exploit test, attack script, test case
+
 **Finding**:
-An exploit that has been reproduced in the sandbox.
-_Avoid_: Bug, vulnerability, issue
+A Scenario that the Referee has run in the sandbox and that made its Rule check true.
+_Avoid_: Bug, vulnerability, issue, exploit
+
+**Recording**:
+The stored answers and outcomes of one real Audit, from which that Audit can be replayed.
+_Avoid_: Fixture, snapshot, log
 
 **Lead**:
-A suspected weakness that has not been reproduced. A Lead is never reported as a Finding.
+A suspected weakness, or a Scenario that did not make its Rule check true. A Lead is never reported as a Finding.
 _Avoid_: Potential finding, warning, suspicion
 
 **Conflict**:
