@@ -10,8 +10,11 @@ export interface Recording {
   commit: string;
   settings: Record<string, unknown>;
   contract: { path: string; source: string };
-  /** Every LLM exchange, in order. `answer` may be stored as JSON for hand-written Recordings. */
-  exchanges: { agent: AgentName; answer: string; tokens: TokenUse }[];
+  /**
+   * Every LLM exchange, in order. `answer` may be stored as JSON for hand-written Recordings.
+   * Live Recordings also hold the model, the prompt the agent was given, and the call's price.
+   */
+  exchanges: { agent: AgentName; answer: string; tokens: TokenUse; model?: string; prompt?: string; usd?: number }[];
   /** Every toolchain outcome, in order. */
   toolchain: { op: "runScenario"; scenario: string; outcome: ScenarioOutcome }[];
   payouts: { agent: string; yoctoNear: string; hash: string }[];
@@ -21,6 +24,19 @@ const AGENTS = ["scout", "rules", "attacker", "prover", "referee", "reporter"] a
 const count: Check<number> = (v, p) => {
   if (typeof v === "number" && Number.isInteger(v) && v >= 0) return v;
   throw new Error(`${p}: expected a whole number`);
+};
+
+const optional =
+  <T>(c: Check<T>): Check<T | undefined> =>
+  (v, p) =>
+    v === undefined ? undefined : c(v, p);
+const dollars: Check<number> = (v, p) => {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  throw new Error(`${p}: expected a number of dollars`);
+};
+const text: Check<string> = (v, p) => {
+  if (typeof v === "string") return v;
+  throw new Error(`${p}: expected a string`);
 };
 
 const recordingCheck: Check<Recording> = (v, p) => {
@@ -33,6 +49,9 @@ const recordingCheck: Check<Recording> = (v, p) => {
         agent: oneOf(...AGENTS),
         answer: (x, q) => (typeof x === "string" ? x : JSON.stringify(anyObject(x, q))),
         tokens: object({ input: count, output: count }),
+        model: optional(str),
+        prompt: optional(text),
+        usd: optional(dollars),
       }),
     ),
     toolchain: array(object({ op: oneOf("runScenario"), scenario: str, outcome: scenarioOutcome })),
@@ -79,7 +98,7 @@ export class ReplayGateway implements LlmGateway {
       );
     }
     this.next++;
-    return { answer: stored.answer, tokens: stored.tokens };
+    return { answer: stored.answer, tokens: stored.tokens, usd: stored.usd, model: stored.model };
   }
 }
 

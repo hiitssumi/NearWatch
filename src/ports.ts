@@ -3,6 +3,10 @@ import type { AgentName, RuleCheck, Scenario, ScenarioOutcome, TokenUse } from "
 export interface LlmAnswer {
   answer: string;
   tokens: TokenUse;
+  /** Dollars this call cost, priced from the table in settings. Absent when unknown (hand-made Recordings). */
+  usd?: number;
+  /** The model that answered. */
+  model?: string;
 }
 
 /** One operation: given an agent name and a prompt, return an answer and its token use. */
