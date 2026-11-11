@@ -1,6 +1,7 @@
 import { attacker, rulesAgent, scout } from "./agents/agents.ts";
 import { type AskContext, type Budget, newBudget } from "./agents/ask.ts";
-import type { AuditResult, Lead, TokenUse } from "./domain.ts";
+import type { AgentName, AuditResult, Lead, TokenUse } from "./domain.ts";
+import { formatNear, ledger } from "./ledger.ts";
 import type { AuditPorts } from "./ports.ts";
 import { referee } from "./referee.ts";
 import { DEFAULT_SPEND_CAP_USD } from "./settings.ts";
@@ -22,7 +23,7 @@ export function auditOptionsFrom(settings: Record<string, unknown>): AuditOption
 
 /**
  * The Audit runner: the one entry point the commands call and the tests attach to.
- * Order: Scout, Rules agent, Attacker, Referee. Prover, Reporter and Payouts arrive in later tickets.
+ * Order: Scout, Rules agent, Attacker, Referee, Payouts. Prover and Reporter arrive in later tickets.
  */
 export async function runAudit(contractPath: string, ports: AuditPorts, options: AuditOptions = {}): Promise<AuditResult> {
   const transcript: string[] = [];
@@ -30,6 +31,8 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   const tokens: Record<string, TokenUse> = {};
   const budget = newBudget(options.spendCapUsd ?? DEFAULT_SPEND_CAP_USD);
   const ctx: AskContext = { llm: ports.llm, tokens, log, budget };
+  // An agent counts as having run when it produced a valid answer; its share is returned otherwise.
+  const ran = new Set<AgentName>(["referee"]);
 
   log(`NearWatch Audit of ${contractPath}`);
   log(`Payer: ${ports.payer.describe}`);
@@ -38,6 +41,7 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   log("");
   log("== Scout ==");
   const map = await scout(ctx, source);
+  if (map) ran.add("scout");
   if (map) {
     log(`  Money moves through: ${map.moneyMethods.join(", ") || "(none)"}`);
     log(`  Balances recorded in: ${map.balanceStorage.join(", ") || "(none)"}`);
@@ -48,6 +52,7 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   log("");
   log("== Rules agent ==");
   const rules = map ? await rulesAgent(ctx, source, map) : [];
+  if (rules.length > 0) ran.add("rules");
   for (const r of rules) {
     log(`  ${r.id}: ${r.text}`);
     log(`      broken when: ${JSON.stringify(r.check.condition)}`);
@@ -58,11 +63,12 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     log("");
     log("(The Audit stops after the Rules agent: there is no sandbox toolchain yet.)");
     logCosts(log, tokens, budget);
-    return { contractPath, scoutMap: map, rules, verdicts: {}, findings: [], leads: [], tokens, transcript };
+    return { contractPath, scoutMap: map, rules, verdicts: {}, findings: [], leads: [], tokens, payouts: [], transcript };
   }
 
   log("");
   log("== Attacker ==");
+  if (map && rules.length > 0) ran.add("attacker");
   const attack = map && rules.length > 0 ? await attacker(ctx, source, map, rules) : { scenarios: [], leads: [] };
   for (const s of attack.scenarios) log(`  ${s.id} against ${s.rule} (${s.bugClass}): ${s.actions.length} actions`);
   for (const l of attack.leads) log(`  Lead on ${l.rule}: ${l.reason}`);
@@ -79,6 +85,16 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
 
   logCosts(log, tokens, budget);
 
+  log("");
+  log("== Payouts ==");
+  if (ports.payer.simulated) log("  SIMULATED: the fake payer records these Payouts and sends nothing on chain.");
+  const payouts: AuditResult["payouts"] = [];
+  for (const p of ledger({ verdicts: result.verdicts, ran })) {
+    const { hash } = await ports.payer.send({ agent: p.to, yoctoNear: p.yoctoNear });
+    payouts.push({ ...p, hash });
+    log(`  ${p.to}: ${formatNear(p.yoctoNear)} (${p.reason}) [${hash}]`);
+  }
+
   return {
     contractPath,
     scoutMap: map,
@@ -87,6 +103,7 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     findings: result.findings,
     leads,
     tokens,
+    payouts,
     transcript,
   };
 }
