@@ -111,6 +111,7 @@ export class ReplayToolchain implements Toolchain {
 /** Records what it would send and sends nothing. */
 export class FakePayer implements Payer {
   readonly describe = "fake payer (records Payouts, sends nothing)";
+  readonly simulated = true;
   readonly sent: PayoutOrder[] = [];
   async send(order: PayoutOrder): Promise<{ hash: string }> {
     this.sent.push(order);

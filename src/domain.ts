@@ -101,6 +101,14 @@ export interface TokenUse {
   output: number;
 }
 
+/** One transfer worked out by the Ledger. "payer" means the amount goes back to the payer. */
+export interface Payout {
+  to: AgentName | "payer";
+  /** yoctoNEAR as a decimal string. */
+  yoctoNear: string;
+  reason: string;
+}
+
 export interface AuditResult {
   contractPath: string;
   scoutMap: ScoutMap | null;
@@ -109,5 +117,7 @@ export interface AuditResult {
   findings: Finding[];
   leads: Lead[];
   tokens: Record<string, TokenUse>;
+  /** Each Payout with the hash the payer returned for it. */
+  payouts: (Payout & { hash: string })[];
   transcript: string[];
 }
