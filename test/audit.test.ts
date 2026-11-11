@@ -101,7 +101,9 @@ test("the hand-made Recording pays R1's share to the Attacker and returns R2's, 
 
 test("the Referee's Payout is the same whatever the verdicts, and Payouts always sum to the Fee", async () => {
   const r = await loadRecording(HAND_MADE);
-  r.toolchain[0]!.outcome.ruleCheckTrue = false; // R1 now Unproven too
+  const entry = r.toolchain[0]!;
+  assert.equal(entry.op, "runScenario");
+  entry.outcome.ruleCheckTrue = false; // R1 now Unproven too
   const result = await audit(r);
   assert.deepEqual(result.verdicts, { R1: "Unproven", R2: "Unproven" });
   const referee = result.payouts.filter((p) => p.to === "referee");
