@@ -29,7 +29,8 @@ export async function readContract(path: string): Promise<string> {
 
   if (info.isDirectory()) {
     const cargo = await readFile(join(path, "Cargo.toml"), "utf8").catch(() => refuse("folder has no Cargo.toml."));
-    if (!/^\s*near-sdk\s*=/m.test(cargo) && !/\[dependencies\.near-sdk\]/.test(cargo)) {
+    // `near-sdk = ...`, `near-sdk.workspace = true` or a `[dependencies.near-sdk]` table.
+    if (!/^\s*near-sdk\s*(=|\.)/m.test(cargo) && !/\[dependencies\.near-sdk\]/.test(cargo)) {
       refuse("Cargo.toml does not depend on near-sdk.");
     }
     const files = await rustFiles(join(path, "src")).catch(() => [] as string[]);

@@ -51,6 +51,7 @@ test("a near-sdk .rs file and a near-sdk crate folder are accepted", async () =>
   assert.match(await readContract(fixture("vault.rs")), /near_sdk/);
   const crate = await readContract(fixture("crate"));
   assert.match(crate, /\/\/ ---- src\/lib\.rs ----/);
+  assert.match(await readContract(fixture("workspace-crate")), /near_sdk/, "near-sdk.workspace = true counts");
 });
 
 for (const [name, path, why] of [
