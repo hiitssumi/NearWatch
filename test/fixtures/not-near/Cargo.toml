@@ -1,0 +1,4 @@
+[package]
+name = "plain"
+[dependencies]
+serde = "1"

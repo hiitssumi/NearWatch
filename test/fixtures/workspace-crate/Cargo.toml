@@ -1,0 +1,5 @@
+[package]
+name = "ws"
+edition.workspace = true
+[dependencies]
+near-sdk.workspace = true

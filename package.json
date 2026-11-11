@@ -8,6 +8,8 @@
   },
   "scripts": {
     "replay": "node src/cli/replay.ts",
+    "audit": "node src/cli/audit.ts",
+    "check-models": "node src/cli/check-models.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "record-lean": "node test/lean/record-outcomes.ts"

@@ -1,0 +1,4 @@
+[package]
+name = "fixture"
+[dependencies]
+near-sdk = "5"

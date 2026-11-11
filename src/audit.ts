@@ -1,19 +1,36 @@
 import { attacker, rulesAgent, scout } from "./agents/agents.ts";
-import type { AskContext } from "./agents/ask.ts";
+import { type AskContext, type Budget, newBudget } from "./agents/ask.ts";
 import type { AgentName, AuditResult, Lead, TokenUse } from "./domain.ts";
 import { formatNear, ledger } from "./ledger.ts";
 import type { AuditPorts } from "./ports.ts";
 import { referee } from "./referee.ts";
+import { DEFAULT_SPEND_CAP_USD } from "./settings.ts";
+
+export interface AuditOptions {
+  /** Dollars of LLM calls after which no agent is asked again. Default $5. */
+  spendCapUsd?: number;
+  /** Stop after the Rules agent (used while no sandbox toolchain exists; ticket 05 removes the need). */
+  stopAfter?: "rules";
+}
+
+/** The Audit options stored in a Recording's settings, so a replay runs the same way the live run did. */
+export function auditOptionsFrom(settings: Record<string, unknown>): AuditOptions {
+  const o: AuditOptions = {};
+  if (typeof settings.spendCapUsd === "number") o.spendCapUsd = settings.spendCapUsd;
+  if (settings.stopAfter === "rules") o.stopAfter = "rules";
+  return o;
+}
 
 /**
  * The Audit runner: the one entry point the commands call and the tests attach to.
  * Order: Scout, Rules agent, Attacker, Referee, Payouts. Prover and Reporter arrive in later tickets.
  */
-export async function runAudit(contractPath: string, ports: AuditPorts): Promise<AuditResult> {
+export async function runAudit(contractPath: string, ports: AuditPorts, options: AuditOptions = {}): Promise<AuditResult> {
   const transcript: string[] = [];
   const log = (line: string) => transcript.push(line);
   const tokens: Record<string, TokenUse> = {};
-  const ctx: AskContext = { llm: ports.llm, tokens, log };
+  const budget = newBudget(options.spendCapUsd ?? DEFAULT_SPEND_CAP_USD);
+  const ctx: AskContext = { llm: ports.llm, tokens, log, budget };
   // An agent counts as having run when it produced a valid answer; its share is returned otherwise.
   const ran = new Set<AgentName>(["referee"]);
 
@@ -36,8 +53,18 @@ export async function runAudit(contractPath: string, ports: AuditPorts): Promise
   log("== Rules agent ==");
   const rules = map ? await rulesAgent(ctx, source, map) : [];
   if (rules.length > 0) ran.add("rules");
-  for (const r of rules) log(`  ${r.id}: ${r.text}`);
+  for (const r of rules) {
+    log(`  ${r.id}: ${r.text}`);
+    log(`      broken when: ${JSON.stringify(r.check.condition)}`);
+  }
   if (rules.length === 0) log("  (no Rules)");
+
+  if (options.stopAfter === "rules") {
+    log("");
+    log("(The Audit stops after the Rules agent: there is no sandbox toolchain yet.)");
+    logCosts(log, tokens, budget);
+    return { contractPath, scoutMap: map, rules, verdicts: {}, findings: [], leads: [], tokens, payouts: [], transcript };
+  }
 
   log("");
   log("== Attacker ==");
@@ -56,9 +83,7 @@ export async function runAudit(contractPath: string, ports: AuditPorts): Promise
   log("== Verdicts ==");
   for (const r of rules) log(`  ${r.id}: ${result.verdicts[r.id]}`);
 
-  log("");
-  log("== Tokens ==");
-  for (const [agent, t] of Object.entries(tokens)) log(`  ${agent}: ${t.input} in, ${t.output} out`);
+  logCosts(log, tokens, budget);
 
   log("");
   log("== Payouts ==");
@@ -81,4 +106,14 @@ export async function runAudit(contractPath: string, ports: AuditPorts): Promise
     payouts,
     transcript,
   };
+}
+
+function logCosts(log: (line: string) => void, tokens: Record<string, TokenUse>, budget: Budget): void {
+  log("");
+  log("== Tokens and spend ==");
+  for (const [agent, t] of Object.entries(tokens)) {
+    const usd = budget.byAgent[agent];
+    log(`  ${agent}: ${t.input} in, ${t.output} out${usd === undefined ? "" : `, $${usd.toFixed(4)}`}`);
+  }
+  log(`  Total spend: $${budget.spentUsd.toFixed(4)} (cap $${budget.capUsd.toFixed(2)})${budget.capReached ? " -- CAP REACHED" : ""}`);
 }
