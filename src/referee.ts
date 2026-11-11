@@ -42,7 +42,15 @@ export async function referee(
       log(`  ${scenario.id}: does not bind ${missing.join(", ")}, kept as a Lead`);
       continue;
     }
-    const outcome = await toolchain.runScenario(contractPath, scenario, rule.check);
+    let outcome;
+    try {
+      outcome = await toolchain.runScenario(contractPath, scenario, rule.check);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      leads.push({ rule: rule.id, reason: `Scenario ${scenario.id} could not be run: ${why}`, scenario });
+      log(`  ${scenario.id}: could not be run (${why}), kept as a Lead`);
+      continue;
+    }
     if (outcome.ruleCheckTrue) {
       findings.push({ scenario, outcome });
       log(`  ${scenario.id}: Rule check TRUE on the Referee's own run -> Finding against ${rule.id}`);
