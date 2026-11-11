@@ -15,6 +15,8 @@ import { loadSettings, publicSettings, type Settings } from "./settings.ts";
 /** Until the sandbox toolchain exists (tickets 02 and 05), the live Audit stops after the Rules agent. */
 const NO_TOOLCHAIN: Toolchain = {
   runScenario: () => Promise.reject(new Error("No sandbox toolchain yet (tickets 02 and 05).")),
+  // Lean checking exists (src/lean.ts, ticket 06); the live Audit wires it in with the Prover (ticket 07).
+  checkLean: () => Promise.reject(new Error("No Prover in live Audits yet (ticket 07).")),
 };
 
 export interface LiveAuditRequest {
