@@ -14,8 +14,9 @@ if (!contractPath) {
 } else {
   const outDir = values.out ?? `audits/${new Date().toISOString().replace(/[:.]/g, "-")}`;
   try {
-    const { result, recordingPath } = await liveAudit({ contractPath, outDir, settings: values.settings });
+    const { result, recordingPath, notes } = await liveAudit({ contractPath, outDir, settings: values.settings });
     console.log(result!.transcript.join("\n"));
+    for (const n of notes) console.log(`\n${n}`);
     console.log(`\nRecording: ${recordingPath}  (replay with: npm run replay -- ${recordingPath})`);
   } catch (e) {
     console.error(`audit failed: ${(e as Error).message}`);

@@ -12,7 +12,8 @@
     "check-models": "node src/cli/check-models.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "record-lean": "node test/lean/record-outcomes.ts"
+    "record-lean": "node test/lean/record-outcomes.ts",
+    "scenario": "node src/cli/run-scenario.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -1,16 +1,20 @@
-import { attacker, rulesAgent, scout } from "./agents/agents.ts";
+import { rulesAgent, scout } from "./agents/agents.ts";
+import { attacker } from "./agents/attacker.ts";
 import { type AskContext, type Budget, newBudget } from "./agents/ask.ts";
-import type { AgentName, AuditResult, Lead, TokenUse } from "./domain.ts";
+import type { AgentName, AuditResult, Lead, SandboxSetup, TokenUse } from "./domain.ts";
 import { formatNear, ledger } from "./ledger.ts";
 import type { AuditPorts } from "./ports.ts";
 import { referee } from "./referee.ts";
+import { VAULT_SETUP } from "./sandbox.ts";
 import { DEFAULT_SPEND_CAP_USD } from "./settings.ts";
 
 export interface AuditOptions {
   /** Dollars of LLM calls after which no agent is asked again. Default $5. */
   spendCapUsd?: number;
-  /** Stop after the Rules agent (used while no sandbox toolchain exists; ticket 05 removes the need). */
+  /** Stop after the Rules agent (tests of the Scout and Rules agent alone). */
   stopAfter?: "rules";
+  /** What the sandbox holds before each Scenario. Defaults to the demo vaults' setup. */
+  setup?: SandboxSetup;
 }
 
 /** The Audit options stored in a Recording's settings, so a replay runs the same way the live run did. */
@@ -68,15 +72,16 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
 
   log("");
   log("== Attacker ==");
-  if (map && rules.length > 0) ran.add("attacker");
-  const attack = map && rules.length > 0 ? await attacker(ctx, source, map, rules) : { scenarios: [], leads: [] };
-  for (const s of attack.scenarios) log(`  ${s.id} against ${s.rule} (${s.bugClass}): ${s.actions.length} actions`);
-  for (const l of attack.leads) log(`  Lead on ${l.rule}: ${l.reason}`);
-  if (attack.scenarios.length === 0 && attack.leads.length === 0) log("  (nothing proposed)");
+  const attack =
+    map && rules.length > 0
+      ? await attacker(ctx, ports.toolchain, contractPath, options.setup ?? VAULT_SETUP, source, map, rules)
+      : { claimed: [], leads: [], answered: false };
+  if (attack.answered) ran.add("attacker");
+  if (!map || rules.length === 0) log("  (nothing to attack)");
 
   log("");
   log("== Referee ==");
-  const result = await referee(contractPath, rules, attack.scenarios, ports.toolchain, log);
+  const result = await referee(contractPath, rules, attack.claimed, ports.toolchain, log);
   const leads: Lead[] = [...attack.leads, ...result.leads];
 
   log("");

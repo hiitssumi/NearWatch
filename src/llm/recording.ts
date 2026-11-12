@@ -1,8 +1,8 @@
 // The recording LLM gateway: wraps another gateway (normally the live one) and stores every exchange.
 
 import { execFileSync } from "node:child_process";
-import type { AgentName } from "../domain.ts";
-import type { LlmAnswer, LlmGateway } from "../ports.ts";
+import type { AgentName, LeanOutcome, Property, RuleCheck, Scenario, ScenarioOutcome } from "../domain.ts";
+import type { LlmAnswer, LlmGateway, Toolchain } from "../ports.ts";
 import type { Recording } from "../replay/recording.ts";
 
 export class RecordingGateway implements LlmGateway {
@@ -18,8 +18,39 @@ export class RecordingGateway implements LlmGateway {
     return result;
   }
 
-  toRecording(parts: { commit: string; settings: Record<string, unknown>; contract: Recording["contract"] }): Recording {
-    return { format: 1, ...parts, exchanges: this.exchanges, toolchain: [], payouts: [] };
+  toRecording(parts: {
+    commit: string;
+    settings: Record<string, unknown>;
+    contract: Recording["contract"];
+    toolchain?: Recording["toolchain"];
+  }): Recording {
+    return { format: 1, ...parts, exchanges: this.exchanges, toolchain: parts.toolchain ?? [], payouts: [] };
+  }
+}
+
+/** Wraps a toolchain and stores every outcome, including a Scenario that could not be run, in order. */
+export class RecordingToolchain implements Toolchain {
+  readonly entries: Recording["toolchain"] = [];
+  private readonly inner: Toolchain;
+  constructor(inner: Toolchain) {
+    this.inner = inner;
+  }
+
+  async runScenario(contractPath: string, scenario: Scenario, check: RuleCheck): Promise<ScenarioOutcome> {
+    try {
+      const outcome = await this.inner.runScenario(contractPath, scenario, check);
+      this.entries.push({ op: "runScenario", scenario: scenario.id, outcome });
+      return outcome;
+    } catch (e) {
+      this.entries.push({ op: "runScenario", scenario: scenario.id, error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }
+
+  async checkLean(formalization: string, property: Property, proofBody: string): Promise<LeanOutcome> {
+    const outcome = await this.inner.checkLean(formalization, property, proofBody);
+    this.entries.push({ op: "checkLean", property: property.rule, outcome });
+    return outcome;
   }
 }
 

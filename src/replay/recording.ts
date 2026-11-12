@@ -22,6 +22,8 @@ export interface Recording {
 
 export type ToolchainEntry =
   | { op: "runScenario"; scenario: string; outcome: ScenarioOutcome }
+  /** A Scenario the sandbox refused or failed to run; `error` is its message, replayed as a thrown error. */
+  | { op: "runScenario"; scenario: string; error: string }
   /** `property` is the Rule id of the Property whose proof was checked. */
   | { op: "checkLean"; property: string; outcome: LeanOutcome };
 
@@ -34,7 +36,9 @@ const leanOutcome: Check<LeanOutcome> = object({
 const toolchainEntry: Check<ToolchainEntry> = (v, p) =>
   (v as { op?: unknown })?.op === "checkLean"
     ? object({ op: oneOf("checkLean"), property: str, outcome: leanOutcome })(v, p)
-    : object({ op: oneOf("runScenario"), scenario: str, outcome: scenarioOutcome })(v, p);
+    : (v as { error?: unknown })?.error !== undefined
+      ? object({ op: oneOf("runScenario"), scenario: str, error: str })(v, p)
+      : object({ op: oneOf("runScenario"), scenario: str, outcome: scenarioOutcome })(v, p);
 
 const AGENTS = ["scout", "rules", "attacker", "prover", "referee", "reporter"] as const;
 const count: Check<number> = (v, p) => {
@@ -139,6 +143,7 @@ export class ReplayToolchain implements Toolchain {
       );
     }
     this.next++;
+    if ("error" in stored) throw new Error(stored.error);
     return stored.outcome;
   }
 

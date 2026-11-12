@@ -61,6 +61,16 @@ export interface Scenario {
   bind: Record<string, SlotBinding>;
 }
 
+/** What exists in the sandbox before a Scenario's first action. */
+export interface SandboxSetup {
+  /** The account the contract is deployed to. */
+  contract: string;
+  /** Account name to balance in yoctoNEAR. */
+  accounts: Record<string, string>;
+  /** The call that initialises the contract, if any. */
+  init: { as: string; method: string; args: Record<string, unknown> } | null;
+}
+
 export interface ObservationSet {
   views: Record<string, string>;
   balances: Record<string, string>;

@@ -8,9 +8,9 @@ import { assembleLeanFile, readAxiomReport } from "../src/lean.ts";
 import { judgeLeanOutcome, screenProofBody } from "../src/proof-rules.ts";
 import { referee } from "../src/referee.ts";
 import { loadRecording, type Recording, replayPorts, type ToolchainEntry } from "../src/replay/recording.ts";
+import { HAND_MADE, handMadeRules, handMadeScenario } from "./hand-made.ts";
 import { CASES, type CaseName, FORMALIZATION, FORMALIZATION_WITH_AXIOM, PROPERTIES } from "./lean/cases.ts";
 
-const HAND_MADE = new URL("../recordings/hand-made.json", import.meta.url).pathname;
 const STORED: Record<CaseName, LeanOutcome> = JSON.parse(
   readFileSync(new URL("./lean/lean-outcomes.json", import.meta.url), "utf8"),
 ).outcomes;
@@ -21,9 +21,10 @@ const lean = (name: CaseName): ToolchainEntry => ({ op: "checkLean", property: C
 /** The hand-made Recording's Rules and Scenario, with the given toolchain outcomes stored after its own. */
 async function setup(extra: ToolchainEntry[], { withFinding = true } = {}) {
   const r: Recording = await loadRecording(HAND_MADE);
-  const rules: Rule[] = JSON.parse(r.exchanges[1]!.answer).rules;
-  const scenarios: Scenario[] = withFinding ? JSON.parse(r.exchanges[2]!.answer).scenarios : [];
-  r.toolchain = [...(withFinding ? r.toolchain : []), ...extra];
+  const rules: Rule[] = handMadeRules(r);
+  const scenarios: Scenario[] = withFinding ? [handMadeScenario(r)] : [];
+  // Only the Referee's own run of S1 (index 1): this calls the Referee directly, without the Attacker.
+  r.toolchain = [...(withFinding ? [r.toolchain[1]!] : []), ...extra];
   const transcript: string[] = [];
   const run = (proofs: Proof[], formalization = FORMALIZATION) =>
     referee(r.contract.path, rules, scenarios, replayPorts(r).toolchain, (l) => transcript.push(l), {

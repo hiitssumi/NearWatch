@@ -10,7 +10,7 @@ import type { AgentName } from "../src/domain.ts";
 import { liveAudit } from "../src/live-audit.ts";
 import { type FetchFn, LiveGateway, LlmCallError } from "../src/llm/live.ts";
 import type { LlmAnswer, LlmGateway } from "../src/ports.ts";
-import { FakePayer, loadRecording, type Recording, replayPorts } from "../src/replay/recording.ts";
+import { FakePayer, loadRecording, type Recording, ReplayToolchain, replayPorts } from "../src/replay/recording.ts";
 import { parseSettings, type Settings, SettingsError } from "../src/settings.ts";
 
 const fixture = (p: string) => new URL(`fixtures/${p}`, import.meta.url).pathname;
@@ -147,32 +147,50 @@ test("the live gateway retries a rate limit and reports other HTTP errors clearl
 
 // ---- A live run with a fake model, recorded, then replayed ----
 
-async function handMadeAnswers(): Promise<{ scout: string; rules: string }> {
+async function handMade() {
   const r = await loadRecording(HAND_MADE);
-  return { scout: r.exchanges[0]!.answer, rules: r.exchanges[1]!.answer };
+  const [scout, rules, attackR1, attackR2] = r.exchanges.map((e) => e.answer);
+  return { scout: scout!, rules: rules!, attackR1: attackR1!, attackR2: attackR2!, toolchain: new ReplayToolchain(r.toolchain) };
 }
 
-test("a live run records every exchange, and its Recording replays to the same result", async () => {
-  const { scout, rules } = await handMadeAnswers();
+test("a live run records every exchange and sandbox run, writes its Scenarios, and its Recording replays to the same result", async () => {
+  const { scout, rules, attackR1, attackR2, toolchain } = await handMade();
   const fake = new Scripted([
     { answer: "not json", tokens: { input: 900, output: 10 }, usd: 0.002, model: "glm" },
     { answer: scout, tokens: { input: 1000, output: 150 }, usd: 0.003, model: "glm" },
     { answer: rules, tokens: { input: 1500, output: 400 }, usd: 0.005, model: "glm" },
+    { answer: attackR1, tokens: { input: 2600, output: 380 }, usd: 0.0012, model: "ds" },
+    { answer: attackR2, tokens: { input: 2500, output: 260 }, usd: 0.0011, model: "ds" },
   ]);
   const outDir = await tempDir();
-  const { result, recordingPath } = await liveAudit({ contractPath: fixture("vault.rs"), outDir, settings: settings(), llm: () => fake });
+  const { result, recordingPath, notes } = await liveAudit({
+    contractPath: fixture("vault.rs"),
+    outDir,
+    settings: settings(),
+    llm: () => fake,
+    toolchain,
+  });
 
-  assert.deepEqual(fake.calls, ["scout", "scout", "rules"]);
+  assert.deepEqual(fake.calls, ["scout", "scout", "rules", "attacker", "attacker"]);
+  assert.deepEqual(result!.verdicts, { R1: "Broken", R2: "Unproven" });
   assert.deepEqual(result!.scoutMap?.moneyMethods, ["deposit", "withdraw"]);
   assert.match(result!.scoutMap!.standingNote, /deployed account/);
   assert.deepEqual(result!.rules.map((r) => r.id), ["R1", "R2"]);
-  assert.ok(result!.transcript.includes("  Total spend: $0.0100 (cap $5.00)"));
+  assert.ok(result!.transcript.includes("  Total spend: $0.0123 (cap $5.00)"));
 
   const recording = await loadRecording(recordingPath);
-  assert.equal(recording.exchanges.length, 3);
+  assert.equal(recording.exchanges.length, 5);
   assert.equal(recording.exchanges[0]!.model, "glm");
   assert.match(recording.exchanges[1]!.prompt!, /previous answer was invalid/);
-  assert.equal(recording.settings.stopAfter, "rules");
+  assert.deepEqual(recording.toolchain.map((t) => t.op === "runScenario" && t.scenario), ["S1", "S1"], "the Attacker's run, then the Referee's");
+  assert.equal(recording.settings.stopAfter, undefined);
+
+  const file = JSON.parse(await readFile(join(outDir, "scenarios", "S1.json"), "utf8"));
+  assert.equal(file.contractPath, fixture("vault.rs"));
+  assert.equal(file.rule.id, "R1");
+  assert.equal(file.scenario.id, "S1");
+  assert.match(notes[0]!, /npm run scenario -- <file>/);
+  assert.match(await readFile(join(outDir, "transcript.txt"), "utf8"), /Scenarios written to/);
   assert.ok(!JSON.stringify(recording).includes(SECRET), "the Recording must not hold the key");
 
   const replayed = await runAudit(recording.contract.path, replayPorts(recording), auditOptionsFrom(recording.settings));
@@ -186,7 +204,7 @@ const priced = (r: Recording, ...usd: number[]) => r.exchanges.forEach((e, i) =>
 
 test("a Recording that reaches the spend cap stops asking agents and ends with verdicts", async () => {
   const r = await loadRecording(HAND_MADE);
-  priced(r, 1, 4.5, 0.1); // scout $1, rules $4.50: the cap of $5 is reached before the Attacker.
+  priced(r, 1, 4.5, 0.1, 0.1); // scout $1, rules $4.50: the cap of $5 is reached before the Attacker.
   r.toolchain = [];
   const result = await runAudit(r.contract.path, replayPorts(r, new FakePayer()), { spendCapUsd: 5 });
   assert.equal(result.rules.length, 2);

@@ -6,19 +6,17 @@ import { test } from "node:test";
 import type { Rule, Scenario } from "../src/domain.ts";
 import { loadRecording } from "../src/replay/recording.ts";
 import { referee } from "../src/referee.ts";
+import { HAND_MADE, handMadeRules, handMadeScenario } from "./hand-made.ts";
 import { buildCounts, findCargo, LocalSandbox, SandboxError } from "../src/sandbox.ts";
 
 const skip = findCargo() ? false : "cargo is not installed (see rust/README.md)";
 const BUGGY = new URL("../rust/vaults/buggy", import.meta.url).pathname;
 const FIXED = new URL("../rust/vaults/fixed", import.meta.url).pathname;
-const HAND_MADE = new URL("../recordings/hand-made.json", import.meta.url).pathname;
 
 /** The hand-written Scenario (deposit, then withdraw to an account that does not exist) and Rule 1. */
 async function handWritten(): Promise<{ scenario: Scenario; rule1: Rule }> {
   const r = await loadRecording(HAND_MADE);
-  const rules: Rule[] = JSON.parse(r.exchanges[1]!.answer).rules;
-  const scenarios: Scenario[] = JSON.parse(r.exchanges[2]!.answer).scenarios;
-  return { scenario: scenarios[0]!, rule1: rules.find((x) => x.id === "R1")! };
+  return { scenario: handMadeScenario(r), rule1: handMadeRules(r).find((x) => x.id === "R1")! };
 }
 
 const sandbox = new LocalSandbox();

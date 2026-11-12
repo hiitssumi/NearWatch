@@ -69,10 +69,34 @@ export const scenario: Check<Scenario> = object({
   bind: record(slotBinding),
 });
 
-export const attackerAnswer: Check<{ scenarios: Scenario[]; leads: { rule: string; reason: string }[] }> = object({
-  scenarios: array(scenario),
-  leads: array(object({ rule: str, reason: str })),
-});
+/** One round of the Attacker against one Rule: at most one Scenario per open bug class, or a reason to skip it. */
+export interface AttackerRound {
+  attempts: { bugClass: number; actions: SandboxAction[]; bind: Record<string, SlotBinding> }[];
+  skip: { bugClass: number; reason: string }[];
+}
+
+const classNumber: Check<number> = (v, p) => {
+  if (typeof v === "number" && Number.isInteger(v) && v >= 1) return v;
+  throw new InvalidAnswer(`${p}: expected a bug class number, got ${JSON.stringify(v)}`);
+};
+
+/** `open` is the bug class numbers the Attacker may still use against this Rule. */
+export const attackerRound =
+  (open: number[]): Check<AttackerRound> =>
+  (v, p) => {
+    const raw = v as { skip?: unknown };
+    const round = object({
+      attempts: array(object({ bugClass: classNumber, actions: array(sandboxAction, { min: 1 }), bind: record(slotBinding) })),
+      skip: (x, q) => (x === undefined ? [] : array(object({ bugClass: classNumber, reason: str }))(x, q)),
+    })({ ...(v as object), skip: raw?.skip }, p);
+    const seen = new Set<number>();
+    for (const [i, c] of [...round.attempts.map((a) => a.bugClass), ...round.skip.map((s) => s.bugClass)].entries()) {
+      if (!open.includes(c)) throw new InvalidAnswer(`bug class ${c} is not open; open classes are ${open.join(", ")}`);
+      if (seen.has(c)) throw new InvalidAnswer(`bug class ${c} appears more than once (item ${i + 1})`);
+      seen.add(c);
+    }
+    return round;
+  };
 
 const observationSet = object({ views: record(str), balances: record(amount) });
 

@@ -10,7 +10,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { RuleCheck, Scenario, ScenarioOutcome } from "./domain.ts";
+import type { RuleCheck, SandboxSetup, Scenario, ScenarioOutcome } from "./domain.ts";
 import { scenarioOutcome } from "./schemas.ts";
 
 const run = promisify(execFile);
@@ -19,17 +19,9 @@ export const RUST_DIR = resolve(import.meta.dirname, "..", "rust");
 const HARNESS_BIN = join(RUST_DIR, "target", "release", "nearwatch-harness");
 
 /**
- * What exists in the sandbox before a Scenario's first action. The defaults suit the demo vaults:
- * the contract is deployed to "vault", "owner" is created with 100 NEAR and calls `new({owner})`.
- * The Attacker's prompt must name these accounts (ticket 05).
+ * The defaults suit the demo vaults: the contract is deployed to "vault", "owner" is created with
+ * 100 NEAR and calls `new({owner})`. The Attacker's prompt names these accounts.
  */
-export interface SandboxSetup {
-  contract: string;
-  /** Account name to balance in yoctoNEAR. */
-  accounts: Record<string, string>;
-  init: { as: string; method: string; args: Record<string, unknown> } | null;
-}
-
 export const VAULT_SETUP: SandboxSetup = {
   contract: "vault",
   accounts: { owner: "100000000000000000000000000" },

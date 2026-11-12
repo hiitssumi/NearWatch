@@ -2,7 +2,7 @@
   "format": 1,
   "commit": "hand-made",
   "settings": {
-    "note": "Written by hand for ticket 03. Not from a live Audit."
+    "note": "Written by hand for tickets 03 and 05. Not from a live Audit."
   },
   "contract": {
     "path": "rust/vaults/buggy/src/lib.rs",
@@ -132,14 +132,12 @@
       "agent": "attacker",
       "tokens": {
         "input": 2600,
-        "output": 350
+        "output": 380
       },
       "answer": {
-        "scenarios": [
+        "attempts": [
           {
-            "id": "S1",
-            "rule": "R1",
-            "bugClass": "state not restored when a cross-contract call or transfer fails",
+            "bugClass": 1,
             "actions": [
               {
                 "action": "createAccount",
@@ -184,11 +182,106 @@
             }
           }
         ],
-        "leads": []
+        "skip": [
+          {
+            "bugClass": 2,
+            "reason": "withdraw schedules the transfer after updating state, but no second call can run before the balance is reduced"
+          },
+          {
+            "bugClass": 3,
+            "reason": "the only privileged method pauses deposits and does not move money"
+          },
+          {
+            "bugClass": 4,
+            "reason": "the contract has no callback"
+          },
+          {
+            "bugClass": 5,
+            "reason": "deposit records exactly the attached deposit"
+          },
+          {
+            "bugClass": 6,
+            "reason": "amounts are checked against the recorded balance before subtracting"
+          },
+          {
+            "bugClass": 7,
+            "reason": "the contract has no callback"
+          }
+        ]
+      }
+    },
+    {
+      "agent": "attacker",
+      "tokens": {
+        "input": 2500,
+        "output": 260
+      },
+      "answer": {
+        "attempts": [],
+        "skip": [
+          {
+            "bugClass": 1,
+            "reason": "does not apply to this Rule"
+          },
+          {
+            "bugClass": 2,
+            "reason": "does not apply to this Rule"
+          },
+          {
+            "bugClass": 3,
+            "reason": "set_deposits_paused only sets a flag; it touches no balance"
+          },
+          {
+            "bugClass": 4,
+            "reason": "does not apply to this Rule"
+          },
+          {
+            "bugClass": 5,
+            "reason": "does not apply to this Rule"
+          },
+          {
+            "bugClass": 6,
+            "reason": "does not apply to this Rule"
+          },
+          {
+            "bugClass": 7,
+            "reason": "does not apply to this Rule"
+          }
+        ]
       }
     }
   ],
   "toolchain": [
+    {
+      "op": "runScenario",
+      "scenario": "S1",
+      "outcome": {
+        "observations": {
+          "before": {
+            "views": {
+              "user_recorded": "0"
+            },
+            "balances": {
+              "user_wallet": "10000000000000000000000000",
+              "receiver_wallet": "0"
+            }
+          },
+          "after": {
+            "views": {
+              "user_recorded": "0"
+            },
+            "balances": {
+              "user_wallet": "8991000000000000000000000",
+              "receiver_wallet": "0"
+            }
+          },
+          "failedReceipts": [
+            "transfer of 1 NEAR to nobody-here: account does not exist"
+          ]
+        },
+        "ruleCheckTrue": true
+      }
+    },
     {
       "op": "runScenario",
       "scenario": "S1",

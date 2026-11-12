@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runAudit } from "../src/audit.ts";
 import { FakePayer, loadRecording, type Recording, replayPorts } from "../src/replay/recording.ts";
-
-const HAND_MADE = new URL("../recordings/hand-made.json", import.meta.url).pathname;
+import { HAND_MADE, storedOutcome } from "./hand-made.ts";
 
 const audit = (r: Recording) => runAudit(r.contract.path, replayPorts(r, new FakePayer()));
 
@@ -17,11 +16,9 @@ test("the hand-made Recording ends with Rule 1 Broken and Rule 2 Unproven", asyn
   assert.ok(result.transcript.some((l) => l.includes("S1: Rule check TRUE")));
 });
 
-test("a Scenario that does not make the Rule check true ends as a Lead, not a Finding", async () => {
+test("a Scenario whose Rule check is not true on the Referee's own run ends as a Lead, not a Finding", async () => {
   const r = await loadRecording(HAND_MADE);
-  const entry = r.toolchain[0]!;
-  assert.equal(entry.op, "runScenario");
-  const outcome = entry.outcome;
+  const outcome = storedOutcome(r, 1); // The Attacker's run claimed it; the Referee's re-run does not agree.
   outcome.ruleCheckTrue = false;
   outcome.observations.after.views.user_recorded = "1000000000000000000000000";
   outcome.observations.failedReceipts = [];
@@ -29,9 +26,11 @@ test("a Scenario that does not make the Rule check true ends as a Lead, not a Fi
   const result = await audit(r);
   assert.equal(result.findings.length, 0);
   assert.deepEqual(result.verdicts, { R1: "Unproven", R2: "Unproven" });
-  assert.equal(result.leads.length, 1);
-  assert.equal(result.leads[0]!.rule, "R1");
-  assert.equal(result.leads[0]!.scenario?.id, "S1");
+  const withScenario = result.leads.filter((l) => l.scenario);
+  assert.equal(withScenario.length, 1);
+  assert.equal(withScenario[0]!.rule, "R1");
+  assert.equal(withScenario[0]!.scenario?.id, "S1");
+  assert.ok(result.transcript.includes("  S1: Rule check false -> Lead on R1"));
 });
 
 test("a replay asked for an exchange that is not in the Recording fails with a clear message", async () => {
@@ -50,19 +49,20 @@ test("a replay whose next exchange belongs to another agent fails with a clear m
 
 test("an invalid agent answer is retried, and an agent that never answers validly produces nothing", async () => {
   const r = await loadRecording(HAND_MADE);
-  const [scout, rules, attacker] = r.exchanges;
-  const bad = { agent: "attacker" as const, answer: '{"scenarios": "nope"}', tokens: { input: 10, output: 5 } };
+  const [scout, rules, attackR1, attackR2] = r.exchanges;
+  const bad = { agent: "attacker" as const, answer: '{"attempts": "nope"}', tokens: { input: 10, output: 5 } };
 
-  r.exchanges = [scout!, rules!, bad, attacker!];
+  r.exchanges = [scout!, rules!, bad, attackR1!, attackR2!];
   const retried = await audit(r);
   assert.deepEqual(retried.verdicts, { R1: "Broken", R2: "Unproven" });
-  assert.ok(retried.transcript.some((l) => l.includes("invalid answer from attacker: scenarios: expected an array")));
+  assert.ok(retried.transcript.some((l) => l.includes("invalid answer from attacker: attempts: expected an array")));
 
-  r.exchanges = [scout!, rules!, bad, bad, bad];
+  r.exchanges = [scout!, rules!, bad, bad, bad, bad, bad, bad];
   r.toolchain = [];
   const gaveUp = await audit(r);
   assert.deepEqual(gaveUp.verdicts, { R1: "Unproven", R2: "Unproven" });
-  assert.ok(gaveUp.transcript.some((l) => l.includes("attacker gave no valid answer after 2 retries")));
+  assert.equal(gaveUp.transcript.filter((l) => l.includes("attacker gave no valid answer after 2 retries")).length, 2);
+  assert.equal(gaveUp.payouts.filter((p) => p.to === "attacker").length, 0, "an Attacker that never answered is not paid");
 });
 
 test("the hand-made Recording pays R1's share to the Attacker and returns R2's, the Reporter's and nothing else to the payer", async () => {
@@ -101,9 +101,7 @@ test("the hand-made Recording pays R1's share to the Attacker and returns R2's, 
 
 test("the Referee's Payout is the same whatever the verdicts, and Payouts always sum to the Fee", async () => {
   const r = await loadRecording(HAND_MADE);
-  const entry = r.toolchain[0]!;
-  assert.equal(entry.op, "runScenario");
-  entry.outcome.ruleCheckTrue = false; // R1 now Unproven too
+  storedOutcome(r, 1).ruleCheckTrue = false; // The Referee's re-run disagrees: R1 now Unproven too
   const result = await audit(r);
   assert.deepEqual(result.verdicts, { R1: "Unproven", R2: "Unproven" });
   const referee = result.payouts.filter((p) => p.to === "referee");

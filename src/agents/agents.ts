@@ -1,24 +1,9 @@
-// The LLM agents in this ticket: Scout, Rules agent, Attacker. Each is a function from typed
+// The Scout and the Rules agent (the Attacker is in attacker.ts). Each is a function from typed
 // inputs to typed outputs; the prompt wording is a first draft and is not tested.
 
-import type { Rule, Scenario, ScoutMap } from "../domain.ts";
-import { attackerAnswer, rulesAnswer, scoutMap } from "../schemas.ts";
+import type { Rule, ScoutMap } from "../domain.ts";
+import { rulesAnswer, scoutMap } from "../schemas.ts";
 import { type AskContext, askStructured } from "./ask.ts";
-
-export const BUG_CLASSES = [
-  "state not restored when a cross-contract call or transfer fails",
-  "state updated after an external call is scheduled, so a second call can slip in between",
-  "a privileged method with no access check",
-  "a callback that anyone can call directly",
-  "attached deposits counted wrongly",
-  "balance arithmetic that can overflow or underflow",
-  "a callback starved of gas so it never runs",
-] as const;
-
-export const SANDBOX_ACTIONS = `- {"action":"createAccount","account":<name>,"balance":<yoctoNEAR string>}
-- {"action":"call","as":<account>,"method":<name>,"args":{...},"deposit":<yoctoNEAR string>,"gas":<gas string>}
-- {"action":"view","method":<name>,"args":{...}}
-An action may name an account that does not exist.`;
 
 export function scout(ctx: AskContext, source: string): Promise<ScoutMap | null> {
   return askStructured(
@@ -65,34 +50,4 @@ ${source}`,
     rulesAnswer,
   );
   return answer?.rules ?? [];
-}
-
-export async function attacker(
-  ctx: AskContext,
-  source: string,
-  map: ScoutMap,
-  rules: Rule[],
-): Promise<{ scenarios: Scenario[]; leads: { rule: string; reason: string }[] }> {
-  const answer = await askStructured(
-    ctx,
-    "attacker",
-    `You are the Attacker. Propose Scenarios that break the Rules below in a local sandbox.
-A Scenario is {"id","rule","bugClass","actions":[...],"bind":{slotName: {"view":{"method","args"}} | {"account":name}}}.
-Bind every slot the Rule's check declares. Sandbox actions you may use:
-${SANDBOX_ACTIONS}
-Known bug classes to try:
-${BUG_CLASSES.map((c) => `- ${c}`).join("\n")}
-Answer with JSON only: {"scenarios":[...],"leads":[{"rule","reason"}]}
-
-Rules:
-${JSON.stringify(rules, null, 2)}
-
-Scout's map:
-${JSON.stringify(map, null, 2)}
-
-Contract source:
-${source}`,
-    attackerAnswer,
-  );
-  return answer ?? { scenarios: [], leads: [] };
 }
