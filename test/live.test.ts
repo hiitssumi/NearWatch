@@ -134,6 +134,34 @@ test("the live gateway calls the OpenAI-compatible endpoint with the agent's mod
   assert.ok(Math.abs(r.usd! - (1000 * 0.3 + 200 * 1.2) / 1e6) < 1e-12);
 });
 
+test("the live gateway asks for a stream and joins the streamed answer and its usage", async () => {
+  const events = [
+    { choices: [{ delta: { reasoning_content: "thinking..." } }] },
+    { choices: [{ delta: { content: '{"ok":' } }] },
+    { choices: [{ delta: { content: "true}" } }] },
+    { choices: [], usage: { prompt_tokens: 70, completion_tokens: 9 } },
+  ];
+  const sse = `${events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("")}data: [DONE]\n\n`;
+  let body: Record<string, unknown> = {};
+  const fakeFetch: FetchFn = async (_url, init) => {
+    body = JSON.parse(init.body as string);
+    // Split mid-event, as a network would.
+    const bytes = new TextEncoder().encode(sse);
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(bytes.slice(0, 37));
+        c.enqueue(bytes.slice(37));
+        c.close();
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  };
+  const r = await new LiveGateway(settings(), { fetch: fakeFetch }).ask("scout", "hi");
+  assert.equal(body.stream, true);
+  assert.equal(r.answer, '{"ok":true}');
+  assert.deepEqual(r.tokens, { input: 70, output: 9 });
+});
+
 test("request extras from settings are sent only to their own model, and cannot replace the model or messages", async () => {
   const bodies: Record<string, unknown>[] = [];
   const fakeFetch: FetchFn = async (_url, init) => {
