@@ -4,6 +4,7 @@
 import type { Rule, ScoutMap } from "../domain.ts";
 import { rulesAnswer, scoutMap } from "../schemas.ts";
 import { type AskContext, askStructured } from "./ask.ts";
+import { BUG_CLASSES } from "./attacker.ts";
 
 export function scout(ctx: AskContext, source: string): Promise<ScoutMap | null> {
   return askStructured(
@@ -51,6 +52,9 @@ A Rule check must stay FALSE whenever the contract behaves correctly, whatever s
   condition itself (for example, the paused flag is true before the call).
 - Allow for gas wherever a NEAR balance is compared: the signer of the call pays gas even when the call fails, and the
   signer may also be the receiver it names. Never compare a NEAR balance with "==" or "!="; use "<" or ">" with an allowance.
+The attacker will try these bug classes. Write each check so that it turns true if any of them happens to the money its Rule
+protects; in particular, compare what a record loses or gains with what really arrived where it was meant to go:
+${BUG_CLASSES.map((c, i) => `${i + 1}. ${c}`).join("\n")}
 Cover every method the Scout's map lists as moving money: for each one, at least one Rule must say that the change it makes
 to recorded balances is matched by real NEAR moving to or from the right account.
 Write at most 5 Rules: the ones that matter most for the money this contract holds.

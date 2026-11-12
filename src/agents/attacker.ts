@@ -59,7 +59,9 @@ Setup actions (all amounts are yoctoNEAR as decimal strings; 1 NEAR = 1000000000
 - {"action":"call","as":<account>,"method":<contract method>,"args":{...},"deposit":<yoctoNEAR>,"gas":<gas>}
 - {"action":"view","method":<contract view method>,"args":{...}}
 The call under test: {"as":<account>,"method":<one of the Rule's methods>,"args":{...},"deposit":<yoctoNEAR>,"gas":<gas>}
-Any account name may be one that does not exist (for example a receiver). A failed call does not stop the Scenario.`;
+Any account name may be one that does not exist (for example a receiver). A failed call does not stop the Scenario.
+A call reserves its gas up front at about 0.1 NEAR per 100 Tgas (unused gas comes back), so a signer needs its deposit plus
+that reserve: give each account you create at least 1 NEAR more than it will deposit, or attach less gas.`;
 }
 
 function ruleText(rule: Rule): string {

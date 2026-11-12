@@ -254,7 +254,7 @@ impl Sandboxed {
                 Ok(false)
             }
             Err(e) => {
-                self.failed.push(format!("{label}: createAccount {id} rejected: {e}"));
+                self.failed.push(format!("{label}: createAccount {id} rejected: {}", error_chain(&e)));
                 Ok(false)
             }
         }
@@ -280,7 +280,7 @@ impl Sandboxed {
                             self.failed.push(format!("{what}: {f}"));
                         }
                     }
-                    Err(e) => self.failed.push(format!("{what} rejected: {e}")),
+                    Err(e) => self.failed.push(format!("{what} rejected: {}", error_chain(&e))),
                 }
             }
             Step::View { method, args } => {
@@ -353,6 +353,21 @@ fn describe_failures(outcome: &ExecutionFinalResult) -> Vec<String> {
         }
     }
     out
+}
+
+/// An error with every cause under it, so "unable to broadcast" also says why (for example, the signer
+/// cannot cover the deposit plus the gas the call reserves).
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        let text = c.to_string();
+        if !parts.iter().any(|p| p.contains(&text)) {
+            parts.push(text);
+        }
+        cause = c.source();
+    }
+    failure_text(&parts.join(": "))
 }
 
 /// Keeps failure text to one short line.
