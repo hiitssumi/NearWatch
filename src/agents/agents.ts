@@ -45,6 +45,8 @@ So a Rule check must stay FALSE in every Scenario where the contract behaves cor
 - A Rule that applies only in some situation (for example while deposits are paused) must test that situation in the
   condition itself (for example, the paused flag is true both before and after).
 - Allow for gas where a wallet balance is compared.
+Cover every method the Scout's map lists as moving money: for each one, at least one Rule must say that the change it makes
+to recorded balances is matched by real NEAR moving to or from the right account.
 Write at most 5 Rules: the ones that matter most for the money this contract holds.
 
 Example of the format only (an unrelated contract, not a Rule for this one):
