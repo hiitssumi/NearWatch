@@ -72,9 +72,19 @@ function checkSlotsUsed(r: Rule): void {
     if ("slot" in e && !names.has(e.slot)) throw new InvalidAnswer(`rule ${r.id}: condition uses undeclared slot "${e.slot}"`);
     if ("op" in e) (visitExpr(e.left), visitExpr(e.right));
   };
+  const balances = new Set(r.check.slots.filter((s) => s.kind === "balance").map((s) => s.name));
+  const readsBalance = (e: Expr): boolean => ("slot" in e ? balances.has(e.slot) : "op" in e ? readsBalance(e.left) || readsBalance(e.right) : false);
   const visit = (c: Condition): void => {
-    if ("compare" in c) (visitExpr(c.left), visitExpr(c.right));
-    else ("all" in c ? c.all : c.any).forEach(visit);
+    if ("compare" in c) {
+      visitExpr(c.left);
+      visitExpr(c.right);
+      // A wallet moves by gas whenever its owner signs a call, so an exact comparison of one is never meaningful.
+      if ((c.compare === "==" || c.compare === "!=") && (readsBalance(c.left) || readsBalance(c.right))) {
+        throw new InvalidAnswer(
+          `rule ${r.id}: compares a NEAR balance with "${c.compare}"; wallets move by gas whenever their owner signs a call, so compare with "<" or ">" and a gas allowance`,
+        );
+      }
+    } else ("all" in c ? c.all : c.any).forEach(visit);
   };
   visit(r.check.condition);
 }

@@ -168,3 +168,18 @@ test("a Rule check binding must be a known reference or a plain account name, of
   assert.throws(() => rulesAnswer(ruleWith(view), ""), /args\.account_id: "\$who" is not a reference/);
   assert.throws(() => rulesAnswer({ rules: [{ ...ruleWith(ok).rules[0], check: { ...ruleWith(ok).rules[0]!.check, methods: [] } }] }, ""), /methods/);
 });
+
+test("a Rule check that compares a NEAR balance exactly is invalid, since wallets move by gas", () => {
+  const slots = [
+    { name: "credit", kind: "view", describe: "d", bind: { view: { method: "balance_of", args: { account_id: "$caller" } } } },
+    { name: "receiver", kind: "balance", describe: "d", bind: { account: "$arg:receiver_id" } },
+  ];
+  const drop = { op: "sub", left: { slot: "credit", when: "before" }, right: { slot: "credit", when: "after" } };
+  const gain = { op: "sub", left: { slot: "receiver", when: "after" }, right: { slot: "receiver", when: "before" } };
+  const rules = (condition: object) => ({ rules: [{ id: "R2", text: "t", check: { methods: ["withdraw"], slots, condition } }] });
+  // The live run's R2 (12 Nov): made true by a refused withdraw-to-self, where only gas moved.
+  assert.throws(() => rulesAnswer(rules({ compare: "!=", left: drop, right: gain }), ""), /R2: compares a NEAR balance with "!="/);
+  assert.throws(() => rulesAnswer(rules({ any: [{ compare: "==", left: gain, right: { number: "0" } }] }), ""), /with "=="/);
+  assert.doesNotThrow(() => rulesAnswer(rules({ compare: ">", left: drop, right: { op: "add", left: gain, right: { number: "10000000000000000000000" } } }), ""));
+  assert.doesNotThrow(() => rulesAnswer(rules({ compare: "!=", left: { slot: "credit", when: "after" }, right: { number: "0" } }), ""), "views may be compared exactly");
+});

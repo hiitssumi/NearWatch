@@ -49,7 +49,8 @@ A Rule check must stay FALSE whenever the contract behaves correctly, whatever s
 - Bind each slot to exactly the account or value the Rule is about, through the references above.
 - A Rule that applies only in some situation (for example while deposits are paused) must test that situation in the
   condition itself (for example, the paused flag is true before the call).
-- Allow for gas where a wallet balance is compared.
+- Allow for gas wherever a NEAR balance is compared: the signer of the call pays gas even when the call fails, and the
+  signer may also be the receiver it names. Never compare a NEAR balance with "==" or "!="; use "<" or ">" with an allowance.
 Cover every method the Scout's map lists as moving money: for each one, at least one Rule must say that the change it makes
 to recorded balances is matched by real NEAR moving to or from the right account.
 Write at most 5 Rules: the ones that matter most for the money this contract holds.
