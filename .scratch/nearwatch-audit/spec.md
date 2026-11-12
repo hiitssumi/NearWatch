@@ -101,7 +101,7 @@ A reviewer who has no keys and no toolchain can replay a recorded Audit and see 
 ### Shape
 
 - One program in TypeScript on Node 24 runs the Audit. A separate Rust workspace holds the vaults and the sandbox harness. Lean files are plain files checked by the local Lean install, with no Lean package dependencies.
-- An Audit runs in this order: Scout, Rules agent, Attacker and Prover side by side, Referee, Reporter. A Conflict sends control back to the Rules agent for a Refinement, then to the Prover and the Referee again.
+- An Audit runs in this order: Scout, Rules agent, Attacker, Prover, Referee, Reporter. The Attacker and the Prover are independent but run one after the other, so a Recording replays in the order it was made. A Conflict sends control back to the Rules agent for a Refinement, then to the Prover and the Referee again.
 - Three commands: one runs a live Audit on a contract path, one replays a Recording (with a flag for verification), one sets up the testnet accounts.
 - Only Rust near-sdk contracts are accepted. Anything else is refused with a clear message before any LLM call.
 
@@ -146,6 +146,9 @@ Each module below has a small interface and hides the work behind it.
 - A proof passes only if Lean accepts the file and the axioms it reports are within the standard set. Any use of a placeholder fails the check.
 - The Prover's loop is: write a proof body, check it, read Lean's errors, try again. Up to twelve rounds or ten minutes per Property, whichever comes first.
 - Each attempt's tokens, dollars and time are logged against the Property.
+- The ten minutes are counted from the recorded duration of each LLM call and Lean check, not from the clock, so a replay stops the Prover's loop exactly where the live run stopped it.
+- Before the Prover starts, each Property statement is compiled against the Formalization with a placeholder proof. If Lean rejects it, the Rules agent is given Lean's errors and rewrites the Formalization and Properties, up to twice. With none that compiles, there is nothing to prove and every Rule without a Finding ends Unproven.
+- Lean runs code while it checks a file (`#eval` needs no imports). So LLM-written Lean is screened before Lean sees it: a Formalization or Property statement may contain only plain definitions (no commands, imports, options, axioms, placeholders, unsafe or foreign code, or new syntax), and a proof body only tactics.
 
 ### The Formalization
 

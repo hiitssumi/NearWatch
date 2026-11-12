@@ -4,7 +4,7 @@
 
 **Blocked by:** 04
 
-**Status:** needs-info
+**Status:** wontfix
 
 This ticket waits on one fact: whether ticket 07 met the Lean checkpoint by Thursday night. If the builder declares the checkpoint missed, set this to `ready-for-agent`. If the checkpoint is met, set it to `wontfix`.
 
@@ -19,3 +19,7 @@ This ticket waits on one fact: whether ticket 07 met the Lean checkpoint by Thur
 - [ ] On the buggy vault, Rule 1 is checked against the first Formalization and fails against the Refinement.
 - [ ] Lean is not called anywhere in an Audit. Ticket 17 is set to `wontfix`.
 - [ ] Fast tests from Recordings cover: a checked Rule, a failing sequence, and the Referee rejecting a "checked" claim it cannot repeat.
+
+## Comments
+
+**wontfix (13 Nov 2026).** Ticket 07 met the Lean checkpoint: a live Audit of the buggy vault proved the withdraw Rule's Property with the Prover's own loop (`recordings/live-prover-buggy-vault.json`). Lean stays.

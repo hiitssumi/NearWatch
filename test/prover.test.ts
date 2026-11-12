@@ -2,7 +2,7 @@
 // hand-written Lean test material standing in for the Rules agent's and the Prover's answers.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runAudit } from "../src/audit.ts";
+import { auditOptionsFrom, runAudit } from "../src/audit.ts";
 import type { AgentName } from "../src/domain.ts";
 import { RecordingGateway } from "../src/llm/recording.ts";
 import { loadRecording, type Recording, replayPorts, type ToolchainEntry } from "../src/replay/recording.ts";
@@ -149,4 +149,33 @@ test("the Referee re-checks every proof itself: one its own check rejects counts
   const { result } = await audit(r);
   assert.deepEqual(result.verdicts, { R1: "Unproven", R2: "Proven" });
   assert.ok(result.transcript.includes("  proof of R1: REJECTED (Lean did not accept the file)"));
+});
+
+// ---- The live Audit of the buggy vault (13 Nov 2026, recordings/live-prover-buggy-vault.json) ----
+
+const LIVE = new URL("../recordings/live-prover-buggy-vault.json", import.meta.url).pathname;
+
+test("the live Recording replays to the same verdicts: the withdraw Rule's Property proved by the Prover's own loop against the first Formalization", async () => {
+  const r = await loadRecording(LIVE);
+  assert.equal(r.settings.prover, true);
+  const ports = replayPorts(r);
+  const llm = new RecordingGateway(ports.llm);
+  const result = await runAudit(r.contract.path, { ...ports, llm }, auditOptionsFrom(r.settings));
+  assert.deepEqual(result.verdicts, { R1: "Proven", R2: "Proven", R3: "Proven", R4: "Broken", R5: "Proven" });
+
+  // R2 is the spec's Rule 1: a withdrawal lowers the record only by what the named receiver gets.
+  const withdraw = result.rules.find((x) => x.id === "R2")!;
+  assert.deepEqual(withdraw.check.methods, ["withdraw"]);
+  const proof = result.proofs.find((p) => p.rule === "R2")!;
+  assert.equal(proof.accepted, true);
+  assert.deepEqual(proof.outcome!.axioms.filter((a) => !["propext", "Classical.choice", "Quot.sound"].includes(a)), []);
+
+  // The body is the Prover's own answer, unchanged, from its first round.
+  const r2Answer = r.exchanges.filter((e) => e.agent === "prover")[1]!.answer; // R1's round 1, then R2's.
+  assert.equal(proof.body, JSON.parse(r2Answer).proof);
+  assert.match(result.transcript.find((l) => l.startsWith("  R2 round 1 ("))!, /Lean accepts it/);
+
+  // The first Formalization: withdraw is one step, in which the transfer completes.
+  assert.match(result.formalization!, /\| \.withdraw c amt r =>/);
+  assert.doesNotMatch(result.formalization!, /withdraw_?(start|resolve|callback)/i);
 });
