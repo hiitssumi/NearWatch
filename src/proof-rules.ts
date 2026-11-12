@@ -21,8 +21,27 @@ export function screenProofBody(body: string): string | null {
   const placeholder = /\b(sorry|admit|sorryAx)\b/.exec(code);
   if (placeholder) return `the proof uses the placeholder \`${placeholder[1]}\``;
   if (/(?:^|\s)#[a-z_]+/.test(code)) return "the proof body contains a Lean command (#...); it may supply only a proof";
+  if (/\bset_option\b/.test(code)) return "the proof body uses `set_option`; it may supply only a proof";
   const command = COMMANDS.exec(code);
   if (command) return `the proof body contains \`${command[1]}\`; it may supply only a proof, not new declarations or statements`;
+  return null;
+}
+
+/**
+ * Rejects LLM-written Lean that is not plain definitions and statements, before Lean sees it. Lean runs
+ * code while it checks a file (`#eval` needs no imports), so a Formalization or Property statement may
+ * not contain commands, imports, options, axioms, placeholders, unsafe or foreign code, or new syntax.
+ * Returns the reason, or null if the text may be checked. `what` names the text in the reason.
+ */
+export function screenLeanText(text: string, what: string): string | null {
+  const code = stripComments(text);
+  const command = /(?:^|\s)(#[a-z_]+)/.exec(code);
+  if (command) return `${what} contains the Lean command \`${command[1]}\`; it may contain only definitions`;
+  const word =
+    /\b(import|set_option|axiom|sorry|admit|sorryAx|unsafe|implemented_by|extern|initialize|builtin_initialize|macro|macro_rules|syntax|declare_syntax_cat|elab|elab_rules|run_cmd|run_tac|run_elab|IO)\b/.exec(code);
+  if (word) return `${what} uses \`${word[1]}\`, which is not allowed; it may contain only plain definitions`;
+  const attribute = /@\[(?!\s*(?:simp|reducible|inline)\s*\])([^\]]*)\]/.exec(code);
+  if (attribute) return `${what} uses the attribute \`@[${attribute[1]}]\`; only @[simp], @[reducible] and @[inline] are allowed`;
   return null;
 }
 
@@ -42,12 +61,13 @@ export async function checkProof(
   property: Property | undefined,
   proof: Proof,
 ): Promise<ProofCheck> {
-  if (!property) return { rule: proof.rule, accepted: false, reason: `no Property is stated for ${proof.rule}` };
-  const screened = screenProofBody(proof.body);
-  if (screened) return { rule: proof.rule, accepted: false, reason: screened };
-  const outcome = await toolchain.checkLean(formalization, property, proof.body);
+  const { rule, body } = proof;
+  if (!property) return { rule, body, accepted: false, reason: `no Property is stated for ${rule}` };
+  const screened = screenProofBody(body);
+  if (screened) return { rule, body, accepted: false, reason: screened };
+  const outcome = await toolchain.checkLean(formalization, property, body);
   const judged = judgeLeanOutcome(outcome);
   return judged
-    ? { rule: proof.rule, accepted: false, reason: judged, outcome }
-    : { rule: proof.rule, accepted: true, reason: `Lean accepted it; axioms: ${outcome.axioms.join(", ") || "none"}`, outcome };
+    ? { rule, body, accepted: false, reason: judged, outcome }
+    : { rule, body, accepted: true, reason: `Lean accepted it; axioms: ${outcome.axioms.join(", ") || "none"}`, outcome };
 }

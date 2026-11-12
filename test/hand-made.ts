@@ -18,3 +18,28 @@ export function storedOutcome(r: Recording, index: 0 | 1): ScenarioOutcome {
   if (e.op !== "runScenario" || !("outcome" in e)) throw new Error(`toolchain[${index}] is not a Scenario outcome`);
   return e.outcome;
 }
+
+// ---- The Formalization and the Prover, built from the hand-written Lean test material (test/lean) ----
+
+import type { LeanOutcome } from "../src/domain.ts";
+import type { ToolchainEntry } from "../src/replay/recording.ts";
+import { CASES, FORMALIZATION, PROPERTIES } from "./lean/cases.ts";
+
+/** The Rules agent's Formalization answer: the hand-written first Formalization and the Properties of R1 and R2. */
+export const formalAnswer = (formalization = FORMALIZATION, properties = PROPERTIES) => JSON.stringify({ formalization, properties });
+
+/** A Prover answer. */
+export const proofAnswer = (proof: string) => JSON.stringify({ proof });
+export const PROOF_R1 = CASES["accept-R1"].body;
+export const PROOF_R2 = CASES["accept-R2"].body;
+
+/** A stored Lean outcome for `rule`: accepted, or Lean's errors. A statement check (placeholder proof) reports sorryAx. */
+export function lean(rule: string, result: "ok" | "statement" | string, ms?: number): ToolchainEntry {
+  const outcome: LeanOutcome =
+    result === "ok"
+      ? { ok: true, errors: "", axioms: ["propext", "Quot.sound"] }
+      : result === "statement"
+        ? { ok: true, errors: "", axioms: ["sorryAx"] }
+        : { ok: false, errors: result, axioms: [] };
+  return { op: "checkLean", property: rule, outcome: ms === undefined ? outcome : { ...outcome, ms } };
+}

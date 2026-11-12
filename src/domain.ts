@@ -149,6 +149,11 @@ export interface AuditResult {
   tokens: Record<string, TokenUse>;
   /** Each Payout with the hash the payer returned for it. */
   payouts: (Payout & { hash: string })[];
+  /** The Rules agent's Formalization, or null if it wrote none that compiled. */
+  formalization: string | null;
+  properties: Property[];
+  /** The Referee's check of each proof the Prover submitted. */
+  proofs: ProofCheck[];
   transcript: string[];
 }
 
@@ -170,6 +175,8 @@ export interface LeanOutcome {
   ok: boolean;
   errors: string;
   axioms: string[];
+  /** How long the check took. Stored in Recordings, so a replay sees the same clock as the live run. */
+  ms?: number;
 }
 
 /** The proofs submitted to the Referee, with what they are proofs about. */
@@ -181,6 +188,8 @@ export interface ProofSubmission {
 
 export interface ProofCheck {
   rule: string;
+  /** The proof body that was checked. */
+  body: string;
   accepted: boolean;
   reason: string;
   outcome?: LeanOutcome;

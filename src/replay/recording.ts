@@ -14,7 +14,7 @@ export interface Recording {
    * Every LLM exchange, in order. `answer` may be stored as JSON for hand-written Recordings.
    * Live Recordings also hold the model, the prompt the agent was given, and the call's price.
    */
-  exchanges: { agent: AgentName; answer: string; tokens: TokenUse; model?: string; prompt?: string; usd?: number }[];
+  exchanges: { agent: AgentName; answer: string; tokens: TokenUse; model?: string; prompt?: string; usd?: number; ms?: number }[];
   /** Every toolchain outcome, in order. */
   toolchain: ToolchainEntry[];
   payouts: { agent: string; yoctoNear: string; hash: string }[];
@@ -27,20 +27,6 @@ export type ToolchainEntry =
   /** `property` is the Rule id of the Property whose proof was checked. */
   | { op: "checkLean"; property: string; outcome: LeanOutcome };
 
-const leanOutcome: Check<LeanOutcome> = object({
-  ok: bool,
-  errors: (x, q) => (typeof x === "string" ? x : str(x, q)),
-  axioms: array(str),
-});
-
-const toolchainEntry: Check<ToolchainEntry> = (v, p) =>
-  (v as { op?: unknown })?.op === "checkLean"
-    ? object({ op: oneOf("checkLean"), property: str, outcome: leanOutcome })(v, p)
-    : (v as { error?: unknown })?.error !== undefined
-      ? object({ op: oneOf("runScenario"), scenario: str, error: str })(v, p)
-      : object({ op: oneOf("runScenario"), scenario: str, outcome: scenarioOutcome })(v, p);
-
-const AGENTS = ["scout", "rules", "attacker", "prover", "referee", "reporter"] as const;
 const count: Check<number> = (v, p) => {
   if (typeof v === "number" && Number.isInteger(v) && v >= 0) return v;
   throw new Error(`${p}: expected a whole number`);
@@ -50,6 +36,20 @@ const optional =
   <T>(c: Check<T>): Check<T | undefined> =>
   (v, p) =>
     v === undefined ? undefined : c(v, p);
+
+const leanOutcome: Check<LeanOutcome> = (v, p) => {
+  const o = object({ ok: bool, errors: (x, q) => (typeof x === "string" ? x : str(x, q)), axioms: array(str), ms: optional(count) })(v, p);
+  return o.ms === undefined ? { ok: o.ok, errors: o.errors, axioms: o.axioms } : o;
+};
+
+const toolchainEntry: Check<ToolchainEntry> = (v, p) =>
+  (v as { op?: unknown })?.op === "checkLean"
+    ? object({ op: oneOf("checkLean"), property: str, outcome: leanOutcome })(v, p)
+    : (v as { error?: unknown })?.error !== undefined
+      ? object({ op: oneOf("runScenario"), scenario: str, error: str })(v, p)
+      : object({ op: oneOf("runScenario"), scenario: str, outcome: scenarioOutcome })(v, p);
+
+const AGENTS = ["scout", "rules", "attacker", "prover", "referee", "reporter"] as const;
 const dollars: Check<number> = (v, p) => {
   if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
   throw new Error(`${p}: expected a number of dollars`);
@@ -72,6 +72,7 @@ const recordingCheck: Check<Recording> = (v, p) => {
         model: optional(str),
         prompt: optional(text),
         usd: optional(dollars),
+        ms: optional(count),
       }),
     ),
     toolchain: array(toolchainEntry),
@@ -118,7 +119,7 @@ export class ReplayGateway implements LlmGateway {
       );
     }
     this.next++;
-    return { answer: stored.answer, tokens: stored.tokens, usd: stored.usd, model: stored.model };
+    return { answer: stored.answer, tokens: stored.tokens, usd: stored.usd, model: stored.model, ms: stored.ms };
   }
 }
 

@@ -12,6 +12,8 @@ import { type FetchFn, LiveGateway, LlmCallError } from "../src/llm/live.ts";
 import type { LlmAnswer, LlmGateway } from "../src/ports.ts";
 import { FakePayer, loadRecording, type Recording, ReplayToolchain, replayPorts } from "../src/replay/recording.ts";
 import { parseSettings, type Settings, SettingsError } from "../src/settings.ts";
+import { formalAnswer, lean, PROOF_R1, PROOF_R2, proofAnswer } from "./hand-made.ts";
+import { FORMALIZATION } from "./lean/cases.ts";
 
 const fixture = (p: string) => new URL(`fixtures/${p}`, import.meta.url).pathname;
 const HAND_MADE = new URL("../recordings/hand-made.json", import.meta.url).pathname;
@@ -194,7 +196,19 @@ test("the live gateway retries a rate limit and reports other HTTP errors clearl
 async function handMade() {
   const r = await loadRecording(HAND_MADE);
   const [scout, rules, attackR1, attackR2] = r.exchanges.map((e) => e.answer);
-  return { scout: scout!, rules: rules!, attackR1: attackR1!, attackR2: attackR2!, toolchain: new ReplayToolchain(r.toolchain) };
+  const [attackerRun, refereeRun] = r.toolchain;
+  // The Lean checks in the order a live run makes them: statements, then the Prover's, then the Referee's.
+  const toolchain = new ReplayToolchain([
+    lean("R1", "statement"),
+    lean("R2", "statement"),
+    attackerRun!,
+    lean("R1", "ok"),
+    lean("R2", "ok"),
+    refereeRun!,
+    lean("R1", "ok"),
+    lean("R2", "ok"),
+  ]);
+  return { scout: scout!, rules: rules!, attackR1: attackR1!, attackR2: attackR2!, toolchain };
 }
 
 test("a live run records every exchange and sandbox run, writes its Scenarios, and its Recording replays to the same result", async () => {
@@ -203,8 +217,11 @@ test("a live run records every exchange and sandbox run, writes its Scenarios, a
     { answer: "not json", tokens: { input: 900, output: 10 }, usd: 0.002, model: "glm" },
     { answer: scout, tokens: { input: 1000, output: 150 }, usd: 0.003, model: "glm" },
     { answer: rules, tokens: { input: 1500, output: 400 }, usd: 0.005, model: "glm" },
+    { answer: formalAnswer(), tokens: { input: 2000, output: 600 }, usd: 0.007, model: "glm" },
     { answer: attackR1, tokens: { input: 2600, output: 380 }, usd: 0.0012, model: "ds" },
     { answer: attackR2, tokens: { input: 2500, output: 260 }, usd: 0.0011, model: "ds" },
+    { answer: proofAnswer(PROOF_R1), tokens: { input: 3000, output: 500 }, usd: 0.022, model: "opus" },
+    { answer: proofAnswer(PROOF_R2), tokens: { input: 3000, output: 300 }, usd: 0.018, model: "opus" },
   ]);
   const outDir = await tempDir();
   const { result, recordingPath, notes } = await liveAudit({
@@ -215,19 +232,28 @@ test("a live run records every exchange and sandbox run, writes its Scenarios, a
     toolchain,
   });
 
-  assert.deepEqual(fake.calls, ["scout", "scout", "rules", "attacker", "attacker"]);
-  assert.deepEqual(result!.verdicts, { R1: "Broken", R2: "Unproven" });
+  assert.deepEqual(fake.calls, ["scout", "scout", "rules", "rules", "attacker", "attacker", "prover", "prover"]);
+  assert.deepEqual(result!.verdicts, { R1: "Broken", R2: "Proven" });
   assert.deepEqual(result!.scoutMap?.moneyMethods, ["deposit", "withdraw"]);
   assert.match(result!.scoutMap!.standingNote, /deployed account/);
   assert.deepEqual(result!.rules.map((r) => r.id), ["R1", "R2"]);
-  assert.ok(result!.transcript.includes("  Total spend: $0.0123 (cap $5.00)"));
+  assert.ok(result!.transcript.includes("  Total spend: $0.0593 (cap $5.00)"));
 
   const recording = await loadRecording(recordingPath);
-  assert.equal(recording.exchanges.length, 5);
+  assert.equal(recording.exchanges.length, 8);
+  assert.ok(recording.exchanges.every((e) => typeof e.ms === "number"), "each exchange's time is recorded");
   assert.equal(recording.exchanges[0]!.model, "glm");
   assert.match(recording.exchanges[1]!.prompt!, /previous answer was invalid/);
-  assert.deepEqual(recording.toolchain.map((t) => t.op === "runScenario" && t.scenario), ["S1", "S1"], "the Attacker's run, then the Referee's");
+  assert.deepEqual(
+    recording.toolchain.map((t) => (t.op === "runScenario" ? t.scenario : t.property)),
+    ["R1", "R2", "S1", "R1", "R2", "S1", "R1", "R2"],
+    "statements, the Attacker's run, the Prover's checks, then the Referee's runs and checks",
+  );
+  assert.ok(recording.toolchain.every((t) => t.op !== "checkLean" || typeof t.outcome.ms === "number"), "each Lean check's time is recorded");
   assert.equal(recording.settings.stopAfter, undefined);
+  assert.equal(recording.settings.prover, true);
+  assert.equal(await readFile(join(outDir, "formalization.lean"), "utf8"), `${FORMALIZATION.trimEnd()}\n`);
+  assert.match(await readFile(join(outDir, "proofs", "property_R2.lean"), "utf8"), /^-- ACCEPTED by the Referee[^\n]*\n[\s\S]*theorem property_R2 :/);
 
   const file = JSON.parse(await readFile(join(outDir, "scenarios", "S1.json"), "utf8"));
   assert.equal(file.contractPath, fixture("vault.rs"));

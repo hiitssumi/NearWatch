@@ -1,7 +1,8 @@
-import { rulesAgent, scout } from "./agents/agents.ts";
+import { type Formalization, formalize, rulesAgent, scout } from "./agents/agents.ts";
 import { attacker } from "./agents/attacker.ts";
 import { type AskContext, type Budget, newBudget } from "./agents/ask.ts";
-import type { AgentName, AuditResult, Lead, SandboxSetup, TokenUse } from "./domain.ts";
+import { prover } from "./agents/prover.ts";
+import type { AgentName, AuditResult, Lead, Proof, SandboxSetup, TokenUse } from "./domain.ts";
 import { formatNear, ledger } from "./ledger.ts";
 import type { AuditPorts } from "./ports.ts";
 import { referee } from "./referee.ts";
@@ -15,6 +16,11 @@ export interface AuditOptions {
   stopAfter?: "rules";
   /** What the sandbox holds before each Scenario. Defaults to the demo vaults' setup. */
   setup?: SandboxSetup;
+  /**
+   * Run the Formalization and the Prover. Live Audits always do. Off by default so that Recordings made
+   * before the Prover existed (which hold no Formalization) still replay; a Recording stores the choice.
+   */
+  prover?: boolean;
 }
 
 /** The Audit options stored in a Recording's settings, so a replay runs the same way the live run did. */
@@ -22,12 +28,15 @@ export function auditOptionsFrom(settings: Record<string, unknown>): AuditOption
   const o: AuditOptions = {};
   if (typeof settings.spendCapUsd === "number") o.spendCapUsd = settings.spendCapUsd;
   if (settings.stopAfter === "rules") o.stopAfter = "rules";
+  if (settings.prover === true) o.prover = true;
   return o;
 }
 
 /**
  * The Audit runner: the one entry point the commands call and the tests attach to.
- * Order: Scout, Rules agent, Attacker, Referee, Payouts. Prover and Reporter arrive in later tickets.
+ * Order: Scout, Rules agent (Rules, then the Formalization and Properties), Attacker, Prover, Referee, Payouts.
+ * The Attacker and the Prover run one after the other, so a Recording replays in the same order.
+ * The Reporter arrives in a later ticket.
  */
 export async function runAudit(contractPath: string, ports: AuditPorts, options: AuditOptions = {}): Promise<AuditResult> {
   const transcript: string[] = [];
@@ -67,7 +76,29 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     log("");
     log("(The Audit stops after the Rules agent: there is no sandbox toolchain yet.)");
     logCosts(log, tokens, budget);
-    return { contractPath, scoutMap: map, rules, verdicts: {}, findings: [], leads: [], tokens, payouts: [], transcript };
+    return {
+      contractPath,
+      scoutMap: map,
+      rules,
+      verdicts: {},
+      findings: [],
+      leads: [],
+      tokens,
+      payouts: [],
+      formalization: null,
+      properties: [],
+      proofs: [],
+      transcript,
+    };
+  }
+
+  let formal: Formalization | null = null;
+  if (options.prover) {
+    log("");
+    log("== Rules agent: Formalization and Properties ==");
+    formal = map && rules.length > 0 ? await formalize(ctx, ports.toolchain, source, map, rules) : null;
+    for (const p of formal?.properties ?? []) log(`  ${p.rule}: ${p.statement}`);
+    if (!map || rules.length === 0) log("  (no Rules to state)");
   }
 
   log("");
@@ -79,9 +110,21 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   if (attack.answered) ran.add("attacker");
   if (!map || rules.length === 0) log("  (nothing to attack)");
 
+  let proofs: Proof[] = [];
+  if (options.prover) {
+    log("");
+    log("== Prover ==");
+    if (formal) {
+      const proved = await prover(ctx, ports.toolchain, formal, rules);
+      if (proved.answered) ran.add("prover");
+      proofs = proved.proofs;
+    } else log("  (no Formalization to prove anything against)");
+  }
+
   log("");
   log("== Referee ==");
-  const result = await referee(contractPath, rules, attack.claimed, ports.toolchain, log);
+  const submitted = formal ? { ...formal, proofs } : undefined;
+  const result = await referee(contractPath, rules, attack.claimed, ports.toolchain, log, submitted);
   const leads: Lead[] = [...attack.leads, ...result.leads];
 
   log("");
@@ -109,6 +152,9 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     leads,
     tokens,
     payouts,
+    formalization: formal?.formalization ?? null,
+    properties: formal?.properties ?? [],
+    proofs: result.proofs,
     transcript,
   };
 }

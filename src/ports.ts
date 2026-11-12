@@ -7,6 +7,8 @@ export interface LlmAnswer {
   usd?: number;
   /** The model that answered. */
   model?: string;
+  /** How long the call took. Stored in Recordings, so a replay sees the same clock as the live run. */
+  ms?: number;
 }
 
 /** One operation: given an agent name and a prompt, return an answer and its token use. */

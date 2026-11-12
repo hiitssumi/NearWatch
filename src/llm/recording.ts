@@ -13,9 +13,11 @@ export class RecordingGateway implements LlmGateway {
   }
 
   async ask(agent: AgentName, prompt: string): Promise<LlmAnswer> {
+    const start = performance.now();
     const result = await this.inner.ask(agent, prompt);
-    this.exchanges.push({ agent, model: result.model, prompt, answer: result.answer, tokens: result.tokens, usd: result.usd });
-    return result;
+    const ms = result.ms ?? Math.round(performance.now() - start);
+    this.exchanges.push({ agent, model: result.model, prompt, answer: result.answer, tokens: result.tokens, usd: result.usd, ms });
+    return { ...result, ms };
   }
 
   toRecording(parts: {
@@ -48,7 +50,9 @@ export class RecordingToolchain implements Toolchain {
   }
 
   async checkLean(formalization: string, property: Property, proofBody: string): Promise<LeanOutcome> {
-    const outcome = await this.inner.checkLean(formalization, property, proofBody);
+    const start = performance.now();
+    const inner = await this.inner.checkLean(formalization, property, proofBody);
+    const outcome = { ...inner, ms: inner.ms ?? Math.round(performance.now() - start) };
     this.entries.push({ op: "checkLean", property: property.rule, outcome });
     return outcome;
   }

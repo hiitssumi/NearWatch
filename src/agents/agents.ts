@@ -1,10 +1,17 @@
 // The Scout and the Rules agent (the Attacker is in attacker.ts). Each is a function from typed
 // inputs to typed outputs; the prompt wording is a first draft and is not tested.
 
-import type { Rule, ScoutMap } from "../domain.ts";
-import { rulesAnswer, scoutMap } from "../schemas.ts";
+import type { Property, Rule, ScoutMap } from "../domain.ts";
+import type { Toolchain } from "../ports.ts";
+import { screenLeanText } from "../proof-rules.ts";
+import { formalizationAnswer, rulesAnswer, scoutMap } from "../schemas.ts";
 import { type AskContext, askStructured } from "./ask.ts";
 import { BUG_CLASSES } from "./attacker.ts";
+
+export interface Formalization {
+  formalization: string;
+  properties: Property[];
+}
 
 export function scout(ctx: AskContext, source: string): Promise<ScoutMap | null> {
   return askStructured(
@@ -78,3 +85,108 @@ ${source}`,
   );
   return answer?.rules ?? [];
 }
+
+/** Times the Rules agent may rewrite a Formalization whose statements Lean does not compile. */
+export const FORMALIZATION_RETRIES = 2;
+
+const LEAN_EXAMPLE = `abbrev Account := String
+
+structure State where
+  votes : Nat → Nat
+  voted : Account → Bool
+
+inductive Call where
+  | vote (caller : Account) (proposal : Nat)
+
+def step (s : State) : Call → State
+  | .vote c p =>
+      if s.voted c then s
+      else { s with votes := fun q => if q = p then s.votes q + 1 else s.votes q,
+                    voted := fun a => if a = c then true else s.voted a }`;
+
+/**
+ * The Rules agent's second answer: one Formalization of the contract, in which every contract call is one
+ * indivisible step (docs/adr/0001), and a Property for each Rule. Every Property statement must compile
+ * against the Formalization before the Prover starts; if one does not, the agent is given Lean's errors and
+ * tries again, up to FORMALIZATION_RETRIES times. Null when it never produced one that compiles.
+ */
+export async function formalize(
+  ctx: AskContext,
+  toolchain: Pick<Toolchain, "checkLean">,
+  source: string,
+  map: ScoutMap,
+  rules: Rule[],
+): Promise<Formalization | null> {
+  const prompt = `You are the Rules agent. You have written these Rules for a NEAR contract:
+${rules.map((r) => `${r.id}: ${r.text}`).join("\n")}
+
+Now write them in Lean 4, so that another agent can try to prove them. Write:
+1. One Formalization of the contract: a small model of it in plain Lean 4.35, with no imports and no Mathlib. It must define
+   - "structure State": everything the contract records, plus, for each account, the total NEAR it has deposited and the
+     total NEAR it has received from the contract (kept so that Rules about money can be stated).
+     Use Nat for amounts (yoctoNEAR) and String for accounts; a map is a function such as "Account → Nat".
+   - "inductive Call": one constructor per contract method that can change State, taking the signing account first, then
+     the method's arguments, then the attached deposit if the method accepts one.
+   - "def step (s : State) : Call → State": what one call does.
+   Every contract call is ONE indivisible step, even where the code is asynchronous: a transfer or cross-contract call the
+   method schedules is treated as completing within that same step. A call the contract would reject leaves State unchanged.
+   Write only plain definitions (abbrev, def, structure, inductive). Never use axiom, sorry, #-commands,
+   set_option, import, macros, syntax, elab, IO or unsafe code.
+2. One Property for each Rule: a Lean proposition about the Formalization (only the statement: no "theorem", no name, no
+   proof) that says what the Rule says, as faithfully as the Formalization allows. State it about one step, for example
+   "∀ (s : State) (c : Call) ..., <what must hold between s and step s c>". Do not weaken a Property to make it easier to prove.
+
+Example of the format only (an unrelated voting contract):
+{"formalization":${JSON.stringify(LEAN_EXAMPLE)},
+ "properties":[{"rule":"R1","statement":"∀ (s : State) (c : Call) (p : Nat), (step s c).votes p ≤ s.votes p + 1"}]}
+
+Answer with JSON only, in that shape, with one Property for each of ${rules.map((r) => r.id).join(", ")}.
+
+Scout's map:
+${JSON.stringify(map, null, 2)}
+
+Contract source:
+${source}`;
+
+  const check = formalizationAnswer(rules.map((r) => r.id));
+  let current = prompt;
+  for (let attempt = 0; attempt <= FORMALIZATION_RETRIES; attempt++) {
+    const answer = await askStructured(ctx, "rules", current, check);
+    if (!answer) return null;
+    const problem = await compileProblem(toolchain, answer);
+    if (!problem) {
+      ctx.log(`  Formalization compiles (${answer.formalization.split("\n").length} lines), with ${answer.properties.length} Properties.`);
+      return answer;
+    }
+    ctx.log(`  Formalization attempt ${attempt + 1} does not compile: ${problem.split("\n")[0]}`);
+    current = `${prompt}
+
+Your previous answer:
+${JSON.stringify(answer)}
+
+It was rejected: ${problem}
+Fix it and answer again with the whole Formalization and every Property, as JSON only.`;
+  }
+  ctx.log(`  The Rules agent wrote no Formalization that compiles after ${FORMALIZATION_RETRIES} retries; there is nothing to prove.`);
+  return null;
+}
+
+/** Why a Formalization cannot be used, or null. Each statement is compiled with a placeholder proof. */
+async function compileProblem(toolchain: Pick<Toolchain, "checkLean">, f: Formalization): Promise<string | null> {
+  const screened = screenLeanText(f.formalization, "the Formalization");
+  if (screened) return screened;
+  for (const p of f.properties) {
+    const s = screenLeanText(p.statement, `the Property for ${p.rule}`);
+    if (s) return s;
+  }
+  for (const p of f.properties) {
+    const outcome = await toolchain.checkLean(f.formalization, p, "sorry");
+    if (!outcome.ok) {
+      return `Lean could not compile the Formalization with the Property for ${p.rule} (stated as a theorem with a placeholder proof). Lean's errors:\n${clip(outcome.errors)}`;
+    }
+  }
+  return null;
+}
+
+/** Lean's errors, cut to a length a prompt can carry. */
+export const clip = (text: string, max = 4000): string => (text.length <= max ? text : `${text.slice(0, max)}\n... (${text.length - max} more characters)`);

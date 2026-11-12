@@ -1,4 +1,4 @@
-import type { CallUnderTest, Condition, Expr, Rule, SandboxAction, Scenario, ScenarioOutcome, ScoutMap, SlotBinding } from "./domain.ts";
+import type { CallUnderTest, Condition, Expr, Property, Rule, SandboxAction, Scenario, ScenarioOutcome, ScoutMap, SlotBinding } from "./domain.ts";
 import { amount, anyObject, array, bool, type Check, InvalidAnswer, object, oneOf, record, str, variant } from "./validate.ts";
 
 export const scoutMap: Check<ScoutMap> = object({
@@ -88,6 +88,25 @@ function checkSlotsUsed(r: Rule): void {
   };
   visit(r.check.condition);
 }
+
+/** The Rules agent's Formalization, with exactly one Property for each of `rules`. */
+export const formalizationAnswer =
+  (rules: string[]): Check<{ formalization: string; properties: Property[] }> =>
+  (v, p) => {
+    const out = object({ formalization: str, properties: array(object({ rule: str, statement: str }), { min: 1 }) })(v, p);
+    const seen = new Set<string>();
+    for (const prop of out.properties) {
+      if (!rules.includes(prop.rule)) throw new InvalidAnswer(`a Property names ${prop.rule}, which is not one of the Rules (${rules.join(", ")})`);
+      if (seen.has(prop.rule)) throw new InvalidAnswer(`${prop.rule} has more than one Property`);
+      seen.add(prop.rule);
+    }
+    const missing = rules.filter((r) => !seen.has(r));
+    if (missing.length > 0) throw new InvalidAnswer(`no Property for ${missing.join(", ")}; write one for every Rule`);
+    return out;
+  };
+
+/** The Prover's answer: a proof body only. */
+export const proverAnswer: Check<{ proof: string }> = object({ proof: str });
 
 const sandboxAction: Check<SandboxAction> = (v, p) => {
   const kind = oneOf("createAccount", "call", "view")((v as { action?: unknown })?.action, `${p}.action`);
