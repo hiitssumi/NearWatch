@@ -30,7 +30,6 @@ enum Step {
     CreateAccount { account: AccountId, balance: NearToken },
     Call { signer: AccountId, method: String, args: Args, deposit: NearToken, gas: Gas },
     View { method: String, args: Args },
-    Snapshot,
 }
 
 enum Binding {
@@ -41,21 +40,23 @@ enum Binding {
 /// Checks the whole request before the sandbox starts, so a malformed Scenario costs nothing.
 fn prepare(req: &Request) -> Result<(Vec<Step>, Vec<(String, Binding)>), HarnessError> {
     check::validate(&req.check, &req.scenario)?;
-    let snapshots = req.scenario.actions.iter().filter(|a| matches!(a, SandboxAction::Snapshot {})).count();
-    if snapshots > 1 {
-        return Err(HarnessError::invalid(format!(
-            "scenario.actions has {snapshots} snapshot actions; at most one is allowed"
-        )));
-    }
+    let call = &req.scenario.call;
+    let call_action = SandboxAction::Call {
+        signer: call.signer.clone(),
+        method: call.method.clone(),
+        args: call.args.clone(),
+        deposit: call.deposit.clone(),
+        gas: call.gas.clone(),
+    };
     let steps = req
         .scenario
-        .actions
+        .setup
         .iter()
+        .chain(std::iter::once(&call_action))
         .enumerate()
         .map(|(i, a)| {
-            let at = format!("scenario.actions[{i}]");
+            let at = if i == req.scenario.setup.len() { "scenario.call".to_string() } else { format!("scenario.setup[{i}]") };
             Ok(match a {
-                SandboxAction::Snapshot {} => Step::Snapshot,
                 SandboxAction::CreateAccount { account, balance } => Step::CreateAccount {
                     account: account_id(account, &format!("{at}.account"))?,
                     balance: yocto(balance, &format!("{at}.balance"))?,
@@ -84,17 +85,19 @@ fn prepare(req: &Request) -> Result<(Vec<Step>, Vec<(String, Binding)>), Harness
         })
         .collect::<Result<Vec<_>, HarnessError>>()?;
     let bindings = req
-        .scenario
-        .bind
+        .check
+        .slots
         .iter()
-        .map(|(slot, b)| {
+        .map(|slot| {
+            let at = format!("slot \"{}\"", slot.name);
             Ok((
-                slot.clone(),
-                match b {
-                    SlotBinding::View(v) => Binding::View(v.clone()),
-                    SlotBinding::Account(a) => {
-                        Binding::Account(account_id(a, &format!("scenario.bind.{slot}.account"))?)
-                    }
+                slot.name.clone(),
+                match &slot.bind {
+                    SlotBinding::View(v) => Binding::View(ViewCall {
+                        method: v.method.clone(),
+                        args: resolve_args(&v.args, req, &at)?,
+                    }),
+                    SlotBinding::Account(a) => Binding::Account(account_id(&resolve(a, req, &at)?, &at)?),
                 },
             ))
         })
@@ -108,6 +111,48 @@ fn prepare(req: &Request) -> Result<(Vec<Step>, Vec<(String, Binding)>), Harness
         return Err(HarnessError::invalid(format!("wasm file not found: {}", req.wasm)));
     }
     Ok((steps, bindings))
+}
+
+/// Resolves a reference to the call under test: "$caller", "$contract" or "$arg:<name>".
+/// Any string not starting with "$" is returned as it is.
+fn resolve(s: &str, req: &Request, at: &str) -> Result<String, HarnessError> {
+    let call = &req.scenario.call;
+    match s {
+        "$caller" => Ok(call.signer.clone()),
+        "$contract" => Ok(req.setup.contract.clone()),
+        _ => match s.strip_prefix("$arg:") {
+            Some(name) => match call.args.get(name) {
+                Some(serde_json::Value::String(v)) => Ok(v.clone()),
+                Some(other) => Err(HarnessError::invalid(format!(
+                    "{at} reads \"{s}\", but the call's argument {name} is {other}, not a string"
+                ))),
+                None => Err(HarnessError::invalid(format!(
+                    "{at} reads \"{s}\", but the call {}({}) has no argument {name}",
+                    call.method,
+                    serde_json::Value::Object(call.args.clone())
+                ))),
+            },
+            None if s.starts_with('$') => Err(HarnessError::invalid(format!(
+                "{at}: \"{s}\" is not a reference; use $caller, $contract or $arg:<name>"
+            ))),
+            None => Ok(s.to_string()),
+        },
+    }
+}
+
+/// Resolves references in the string values of a view call's arguments.
+fn resolve_args(args: &Args, req: &Request, at: &str) -> Result<Args, HarnessError> {
+    args.iter()
+        .map(|(k, v)| {
+            Ok((
+                k.clone(),
+                match v {
+                    serde_json::Value::String(s) => serde_json::Value::String(resolve(s, req, at)?),
+                    other => other.clone(),
+                },
+            ))
+        })
+        .collect()
 }
 
 fn account_id(s: &str, at: &str) -> Result<AccountId, HarnessError> {
@@ -243,7 +288,6 @@ impl Sandboxed {
                     self.failed.push(format!("{label}: view {method} failed: {e}"));
                 }
             }
-            Step::Snapshot => {}
         }
         Ok(())
     }
@@ -321,12 +365,8 @@ pub async fn run(req: Request) -> Result<ScenarioOutcome, HarnessError> {
     let mut sb = Sandboxed::start(&req).await?;
     sb.failed.clear();
 
-    // "before" is taken at the Scenario's snapshot action, or, when it has none, once its opening
-    // createAccount actions have run.
-    let opening = match steps.iter().position(|s| matches!(s, Step::Snapshot)) {
-        Some(at) => at,
-        None => steps.iter().take_while(|s| matches!(s, Step::CreateAccount { .. })).count(),
-    };
+    // "before" is observed once the setup has run, just before the call under test (the last step).
+    let opening = steps.len() - 1;
     for (i, s) in steps.iter().enumerate().take(opening) {
         sb.step(i, s).await?;
     }

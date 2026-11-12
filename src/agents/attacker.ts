@@ -48,28 +48,31 @@ export function sandboxActions(setup: SandboxSetup): string {
   const init = setup.init
     ? ` It was initialised by "${setup.init.as}" calling ${setup.init.method}(${JSON.stringify(setup.init.args)}).`
     : "";
-  return `Before a Scenario's first action the sandbox holds: the contract, deployed to account "${setup.contract}",${init}
+  return `Before a Scenario starts the sandbox holds: the contract, deployed to account "${setup.contract}",${init}
 and the accounts ${accounts}. You can sign calls as any of these accounts and as any account your Scenario creates.
-Actions (all amounts are yoctoNEAR as decimal strings; 1 NEAR = 1000000000000000000000000; gas is a decimal string, at most 300000000000000):
-- {"action":"createAccount","account":<short name such as "alice">,"balance":<yoctoNEAR>}  (the sandbox itself funds the new account; no other account pays)
+A Scenario is {"setup":[<action>,...],"call":<call>}:
+- "setup" runs first, in order. Use it to create accounts, make deposits, and put the contract in the state you need.
+- Then "before" is observed, then "call" (the ONE call under test) runs, then "after" is observed.
+  The call must be to one of the Rule's methods. Gas refunds and returned deposits have landed before each observation.
+Setup actions (all amounts are yoctoNEAR as decimal strings; 1 NEAR = 1000000000000000000000000; gas is a decimal string, at most 300000000000000):
+- {"action":"createAccount","account":<short name such as "alice">,"balance":<yoctoNEAR>}  (the sandbox itself funds the new account)
 - {"action":"call","as":<account>,"method":<contract method>,"args":{...},"deposit":<yoctoNEAR>,"gas":<gas>}
 - {"action":"view","method":<contract view method>,"args":{...}}
-- {"action":"snapshot"}  (marks where the "before" observations are taken; at most one)
-An action may name an account that does not exist (for example as a receiver). A failed call does not stop the Scenario.
-Observations: "before" is taken at the snapshot action, or, if there is none, right after the Scenario's opening createAccount actions;
-"after" is taken once every action has run. Put setup (accounts, deposits) before the snapshot and the steps the Rule is about after it.
-Gas refunds and returned deposits have landed before each observation.`;
+The call under test: {"as":<account>,"method":<one of the Rule's methods>,"args":{...},"deposit":<yoctoNEAR>,"gas":<gas>}
+Any account name may be one that does not exist (for example a receiver). A failed call does not stop the Scenario.`;
 }
 
 function ruleText(rule: Rule): string {
   return `${rule.id}: ${rule.text}
+Methods the Rule is about (your call under test must be one of them): ${rule.check.methods.join(", ")}
 Rule check (TRUE WHEN THE RULE HAS BEEN BROKEN): ${JSON.stringify(rule.check.condition)}
-Slots you must bind, each to {"view":{"method":<view method>,"args":{...}}} or {"account":<account name>} (an account slot reads its NEAR balance):
-${rule.check.slots.map((s) => `- ${s.name} (${s.kind}): ${s.describe}`).join("\n")}`;
+What each slot reads ($caller is the call's signer, $contract the contract, $arg:<name> that argument of the call;
+any other name is an account your setup must create):
+${rule.check.slots.map((s) => `- ${s.name}: ${s.describe}. Reads ${JSON.stringify(s.bind)}`).join("\n")}`;
 }
 
 function describeAttempt(a: Attempt): string {
-  const head = `${a.scenario.id} (bug class ${a.classNo}): actions ${JSON.stringify(a.scenario.actions)} bind ${JSON.stringify(a.scenario.bind)}`;
+  const head = `${a.scenario.id} (bug class ${a.classNo}): setup ${JSON.stringify(a.scenario.setup)} call ${JSON.stringify(a.scenario.call)}`;
   if (a.error !== undefined) return `${head}\n  could not be run: ${a.error}`;
   const o = a.outcome!.observations;
   return `${head}
@@ -93,7 +96,7 @@ ${open.map((c) => `${c}. ${BUG_CLASSES[c - 1]} [${left(c)}]`).join("\n")}
 For each open bug class, either give ONE Scenario that tries it, or skip it with a short reason why it cannot apply to this Rule and contract.
 A skipped class is closed. A Scenario that does not break the Rule leaves its class open until its attempts run out.
 Answer with JSON only:
-{"attempts":[{"bugClass":<number>,"actions":[...],"bind":{<slot>:...}}],"skip":[{"bugClass":<number>,"reason":"<why>"}]}
+{"attempts":[{"bugClass":<number>,"setup":[...],"call":{...}}],"skip":[{"bugClass":<number>,"reason":"<why>"}]}
 
 Sandbox:
 ${sandboxActions(setup)}
@@ -167,8 +170,8 @@ export async function attacker(
           id: `S${nextId++}`,
           rule: rule.id,
           bugClass: BUG_CLASSES[a.bugClass - 1]!,
-          actions: a.actions,
-          bind: a.bind,
+          setup: a.setup,
+          call: a.call,
         };
         if (broken) {
           leads.push({ rule: rule.id, reason: `Scenario ${scenario.id} not run: ${rule.id} already has a claimed Finding`, scenario });

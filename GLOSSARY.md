@@ -23,11 +23,11 @@ A description of the contract's behaviour in Lean, written by reading the code. 
 _Avoid_: Model, Lean model, spec
 
 **Rule check**:
-A comparison over what was observed in the sandbox that is true when a Rule has been broken.
+A comparison over what was observed in the sandbox, just before and just after one contract call, that is true when a Rule has been broken. It names the calls it is about and what each observation reads.
 _Avoid_: Assertion, oracle, test
 
 **Scenario**:
-An ordered list of sandbox actions the Attacker proposes as a way to break a Rule.
+The Attacker's proposed way to break a Rule: setup actions in the sandbox, then one call under test.
 _Avoid_: Exploit test, attack script, test case
 
 **Finding**:

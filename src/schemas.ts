@@ -1,4 +1,4 @@
-import type { Condition, Expr, Rule, SandboxAction, Scenario, ScenarioOutcome, ScoutMap, SlotBinding } from "./domain.ts";
+import type { CallUnderTest, Condition, Expr, Rule, SandboxAction, Scenario, ScenarioOutcome, ScoutMap, SlotBinding } from "./domain.ts";
 import { amount, anyObject, array, bool, type Check, InvalidAnswer, object, oneOf, record, str, variant } from "./validate.ts";
 
 export const scoutMap: Check<ScoutMap> = object({
@@ -20,14 +20,45 @@ const condition: Check<Condition> = variant<Condition>({
   any: (v, p) => object({ any: array(condition, { min: 1 }) })(v, p),
 });
 
-const rule: Check<Rule> = object({
-  id: str,
-  text: str,
-  check: object({
-    slots: array(object({ name: str, kind: oneOf("view", "balance"), describe: str }), { min: 1 }),
-    condition,
+/** A reference to the call under test, or a literal account name. */
+const reference: Check<string> = (v, p) => {
+  const s = str(v, p);
+  if (s.startsWith("$") && !/^\$(caller|contract|arg:[A-Za-z_][A-Za-z0-9_]*)$/.test(s)) {
+    throw new InvalidAnswer(`${p}: "${s}" is not a reference; use $caller, $contract or $arg:<argument name>`);
+  }
+  return s;
+};
+
+const slotBinding: Check<SlotBinding> = variant<SlotBinding>({
+  view: object({
+    view: object({
+      method: str,
+      args: (v, p) => {
+        const args = anyObject(v, p);
+        for (const [k, x] of Object.entries(args)) if (typeof x === "string") reference(x, `${p}.${k}`);
+        return args;
+      },
+    }),
   }),
+  account: object({ account: reference }),
 });
+
+const rule: Check<Rule> = (v, p) => {
+  const r = object({
+    id: str,
+    text: str,
+    check: object({
+      methods: array(str, { min: 1 }),
+      slots: array(object({ name: str, kind: oneOf("view", "balance"), describe: str, bind: slotBinding }), { min: 1 }),
+      condition,
+    }),
+  })(v, p);
+  for (const [i, s] of r.check.slots.entries()) {
+    if (s.kind === "view" && !("view" in s.bind)) throw new InvalidAnswer(`${p}.check.slots[${i}]: a view slot must bind {"view":...}`);
+    if (s.kind === "balance" && !("account" in s.bind)) throw new InvalidAnswer(`${p}.check.slots[${i}]: a balance slot must bind {"account":...}`);
+  }
+  return r;
+};
 
 export const rulesAnswer: Check<{ rules: Rule[] }> = (v, p) => {
   const out = object({ rules: array(rule, { min: 1 }) })(v, p);
@@ -49,30 +80,27 @@ function checkSlotsUsed(r: Rule): void {
 }
 
 const sandboxAction: Check<SandboxAction> = (v, p) => {
-  const kind = oneOf("createAccount", "call", "view", "snapshot")((v as { action?: unknown })?.action, `${p}.action`);
-  if (kind === "snapshot") return { action: kind };
+  const kind = oneOf("createAccount", "call", "view")((v as { action?: unknown })?.action, `${p}.action`);
   if (kind === "createAccount") return { action: kind, ...object({ account: str, balance: amount })(v, p) };
   if (kind === "call")
     return { action: kind, ...object({ as: str, method: str, args: anyObject, deposit: amount, gas: amount })(v, p) };
   return { action: kind, ...object({ method: str, args: anyObject })(v, p) };
 };
 
-const slotBinding: Check<SlotBinding> = variant<SlotBinding>({
-  view: object({ view: object({ method: str, args: anyObject }) }),
-  account: object({ account: str }),
-});
+
+const callUnderTest: Check<CallUnderTest> = object({ as: str, method: str, args: anyObject, deposit: amount, gas: amount });
 
 export const scenario: Check<Scenario> = object({
   id: str,
   rule: str,
   bugClass: str,
-  actions: array(sandboxAction, { min: 1 }),
-  bind: record(slotBinding),
+  setup: array(sandboxAction),
+  call: callUnderTest,
 });
 
 /** One round of the Attacker against one Rule: at most one Scenario per open bug class, or a reason to skip it. */
 export interface AttackerRound {
-  attempts: { bugClass: number; actions: SandboxAction[]; bind: Record<string, SlotBinding> }[];
+  attempts: { bugClass: number; setup: SandboxAction[]; call: CallUnderTest }[];
   skip: { bugClass: number; reason: string }[];
 }
 
@@ -90,12 +118,8 @@ export const attackerRound =
       attempts: array(
         object({
           bugClass: classNumber,
-          actions: (x, q) => {
-            const actions = array(sandboxAction, { min: 1 })(x, q);
-            if (actions.filter((a) => a.action === "snapshot").length > 1) throw new InvalidAnswer(`${q}: at most one snapshot action`);
-            return actions;
-          },
-          bind: record(slotBinding),
+          setup: array(sandboxAction),
+          call: callUnderTest,
         }),
       ),
       skip: (x, q) => (x === undefined ? [] : array(object({ bugClass: classNumber, reason: str }))(x, q)),

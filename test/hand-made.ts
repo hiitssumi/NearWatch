@@ -9,7 +9,7 @@ export const handMadeRules = (r: Recording): Rule[] => JSON.parse(r.exchanges[1]
 /** The one Scenario the hand-made Attacker writes: deposit, then withdraw to an account that does not exist. */
 export function handMadeScenario(r: Recording): Scenario {
   const a = JSON.parse(r.exchanges[2]!.answer).attempts[0];
-  return { id: "S1", rule: "R1", bugClass: "state not restored when a cross-contract call or transfer fails", actions: a.actions, bind: a.bind };
+  return { id: "S1", rule: "R1", bugClass: "state not restored when a cross-contract call or transfer fails", setup: a.setup, call: a.call };
 }
 
 /** A stored runScenario outcome: index 0 is the Attacker's own run of S1, index 1 the Referee's re-run. */

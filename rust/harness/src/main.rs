@@ -65,8 +65,9 @@ mod tests {
 
     fn req(actions: &str) -> String {
         format!(
-            r#"{{"wasm":"x.wasm","scenario":{{"id":"S","rule":"R1","bugClass":"b","actions":{actions},"bind":{{}}}},
-               "check":{{"slots":[],"condition":{{"compare":"==","left":{{"number":"1"}},"right":{{"number":"1"}}}}}}}}"#
+            r#"{{"wasm":"x.wasm","scenario":{{"id":"S","rule":"R1","bugClass":"b","setup":{actions},
+               "call":{{"as":"alice","method":"m","args":{{}},"deposit":"0","gas":"1"}}}},
+               "check":{{"methods":["m"],"slots":[],"condition":{{"compare":"==","left":{{"number":"1"}},"right":{{"number":"1"}}}}}}}}"#
         )
     }
 
@@ -74,7 +75,7 @@ mod tests {
     fn unknown_action_is_named() {
         let e = parse(&req(r#"[{"action":"selfdestruct","as":"alice"}]"#)).unwrap_err();
         assert_eq!(e.kind, ErrorKind::Invalid);
-        assert!(e.message.contains("scenario.actions[0]"), "{}", e.message);
+        assert!(e.message.contains("scenario.setup[0]"), "{}", e.message);
         assert!(e.message.contains("selfdestruct"), "{}", e.message);
     }
 

@@ -26,33 +26,39 @@ export async function rulesAgent(ctx: AskContext, source: string, map: ScoutMap)
     "rules",
     `You are the Rules agent. Write the Rules this contract must always keep, in plain English, each with a Rule check:
 a comparison over sandbox observations that is TRUE WHEN THE RULE HAS BEEN BROKEN.
+A Rule check is about ONE contract call. An attacker builds Scenarios: some setup (creating accounts, deposits, any calls),
+then "before" is observed, then exactly one call under test runs, then "after" is observed. Gas refunds and returned
+deposits have landed by each observation, and an ordinary call costs well under 0.01 NEAR of gas.
+A Scenario whose observations make the check TRUE is reported as proof the Rule is broken.
+
 A Rule check has:
-- "slots": the values it reads. Each slot is {"name":<name>,"kind":"view"|"balance","describe":<what it is>}; all three fields are required.
-  "view" is the result of a contract view method; "balance" is an account's NEAR balance in yoctoNEAR.
+- "methods": the contract methods the Rule is about. The call under test must be one of them.
+- "slots": the values it reads. Each slot is {"name":<name>,"kind":"view"|"balance","describe":<what it is>,"bind":<what to read>}.
+  "view" reads a contract view method: "bind":{"view":{"method":<view method>,"args":{...}}}.
+  "balance" reads an account's NEAR balance in yoctoNEAR: "bind":{"account":<account>}.
+  You write the bindings, not the attacker. In an account, or a string view argument, use a reference to the call under test:
+  "$caller" (the account that signs it), "$contract" (the contract's own account) or "$arg:<name>" (that argument of the call,
+  for example "$arg:receiver_id"). Any other string is a fixed account name the attacker's setup must create.
 - "condition": built only from these forms:
   {"compare":"<"|"<="|"=="|"!="|">="|">","left":<expr>,"right":<expr>}  (use these symbols, never words like "lt")
   {"all":[<condition>,...]}  {"any":[<condition>,...]}
   where <expr> is {"slot":<slot name>,"when":"before"|"after"}, {"number":"<decimal integer string>"}, or {"op":"add"|"sub","left":<expr>,"right":<expr>}.
-Every slot the condition uses must be declared in "slots".
+  Every slot the condition uses must be declared in "slots". Booleans read as 1 (true) and 0 (false).
 
-How a Rule check is used: an attacker writes Scenarios (sequences of contract calls in a local sandbox) and binds each slot
-to a concrete view call or account. "before" is observed at a point the Scenario chooses (after any setup such as deposits),
-"after" once every call has run; gas refunds have landed by then, and an ordinary call costs well under 0.01 NEAR of gas.
-A Scenario whose observations make the check TRUE is reported as proof the Rule is broken.
-So a Rule check must stay FALSE in every Scenario where the contract behaves correctly, however that Scenario is built:
-- It must not be made true by other honest activity in the same window (another user's deposit or withdrawal, a payment
-  received from elsewhere, the owner using a legitimate power). Prefer slots that only the Rule's subject can change.
+A Rule check must stay FALSE whenever the contract behaves correctly, whatever setup and call arguments the attacker picks:
+- Bind each slot to exactly the account or value the Rule is about, through the references above.
 - A Rule that applies only in some situation (for example while deposits are paused) must test that situation in the
-  condition itself (for example, the paused flag is true both before and after).
+  condition itself (for example, the paused flag is true before the call).
 - Allow for gas where a wallet balance is compared.
 Cover every method the Scout's map lists as moving money: for each one, at least one Rule must say that the change it makes
 to recorded balances is matched by real NEAR moving to or from the right account.
 Write at most 5 Rules: the ones that matter most for the money this contract holds.
 
-Example of the format only (an unrelated contract, not a Rule for this one):
-{"rules":[{"id":"R1","text":"An account's NEAR balance never falls by more than 1 NEAR in one Scenario.",
- "check":{"slots":[{"name":"alice_wallet","kind":"balance","describe":"alice's NEAR account balance"}],
- "condition":{"compare":">","left":{"op":"sub","left":{"slot":"alice_wallet","when":"before"},"right":{"slot":"alice_wallet","when":"after"}},"right":{"number":"1000000000000000000000000"}}}}]}
+Example of the format only (an unrelated voting contract, not a Rule for this one):
+{"rules":[{"id":"R1","text":"One vote call adds at most one vote to the proposal it names.",
+ "check":{"methods":["vote"],
+ "slots":[{"name":"votes","kind":"view","describe":"votes on the proposal being voted on","bind":{"view":{"method":"get_votes","args":{"proposal_id":"$arg:proposal_id"}}}}],
+ "condition":{"compare":">","left":{"op":"sub","left":{"slot":"votes","when":"after"},"right":{"slot":"votes","when":"before"}},"right":{"number":"1"}}}}]}
 
 Answer with JSON only, in that shape, with ids R1, R2, ...
 

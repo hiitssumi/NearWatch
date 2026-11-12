@@ -18,6 +18,8 @@ export interface ObservationSlot {
   name: string;
   kind: "view" | "balance";
   describe: string;
+  /** What the slot reads. Written by the Rules agent, never by the Attacker (see SlotBinding). */
+  bind: SlotBinding;
 }
 
 export type Expr =
@@ -32,6 +34,8 @@ export type Condition =
 
 /** True when the Rule has been broken. Evaluated by the sandbox harness, never by the caller. */
 export interface RuleCheck {
+  /** The contract methods the Rule is about. A Scenario's call under test must be one of them. */
+  methods: string[];
   slots: ObservationSlot[];
   condition: Condition;
 }
@@ -47,10 +51,22 @@ export interface Rule {
 export type SandboxAction =
   | { action: "createAccount"; account: string; balance: string }
   | { action: "call"; as: string; method: string; args: Record<string, unknown>; deposit: string; gas: string }
-  | { action: "view"; method: string; args: Record<string, unknown> }
-  /** Marks where the "before" observations are taken. At most one per Scenario. */
-  | { action: "snapshot" };
+  | { action: "view"; method: string; args: Record<string, unknown> };
 
+/** The one call a Scenario is about. */
+export interface CallUnderTest {
+  as: string;
+  method: string;
+  args: Record<string, unknown>;
+  deposit: string;
+  gas: string;
+}
+
+/**
+ * An account name, or a string view argument, may be a reference to the call under test:
+ * "$caller", "$contract" or "$arg:<name>" (one of the call's string arguments). Any other string is a
+ * literal account name, which the Scenario must create for the slot to read anything.
+ */
 export type SlotBinding =
   | { view: { method: string; args: Record<string, unknown> } }
   | { account: string };
@@ -59,8 +75,10 @@ export interface Scenario {
   id: string;
   rule: string;
   bugClass: string;
-  actions: SandboxAction[];
-  bind: Record<string, SlotBinding>;
+  /** Run before "before" is observed: accounts, deposits, anything the call needs. */
+  setup: SandboxAction[];
+  /** "before" is observed just before this call, "after" once it and every receipt it caused have landed. */
+  call: CallUnderTest;
 }
 
 /** What exists in the sandbox before a Scenario's first action. */
@@ -79,9 +97,8 @@ export interface ObservationSet {
 }
 
 /**
- * "before" is taken at the Scenario's snapshot action or, without one, once its opening createAccount
- * actions have run; "after" is taken when every action has run. Each key is a slot name. The harness
- * lets a few blocks pass before each, so gas refunds and returned deposits have landed.
+ * "before" is observed after the Scenario's setup, "after" after its call under test. Each key is a slot
+ * name. The harness lets a few blocks pass before each, so gas refunds and returned deposits have landed.
  */
 export interface Observations {
   before: ObservationSet;

@@ -64,8 +64,21 @@ impl Default for Setup {
 #[serde(rename_all = "camelCase")]
 pub struct Scenario {
     pub id: String,
-    pub actions: Vec<SandboxAction>,
-    pub bind: BTreeMap<String, SlotBinding>,
+    /// Actions run before the "before" observations: accounts, deposits, anything the call needs.
+    pub setup: Vec<SandboxAction>,
+    /// The one call the Rule check is about. "before" is observed just before it, "after" just after.
+    pub call: CallAction,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct CallAction {
+    #[serde(rename = "as")]
+    pub signer: String,
+    pub method: String,
+    pub args: Args,
+    pub deposit: String,
+    pub gas: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -87,11 +100,12 @@ pub enum SandboxAction {
         method: String,
         args: Args,
     },
-    /// Marks where the "before" observations are taken. At most one per Scenario.
-    Snapshot {},
 }
 
-#[derive(Deserialize, Debug)]
+/// What a slot reads, written by the Rules agent. Account names and string view arguments may be
+/// references to the call under test: "$caller", "$contract" or "$arg:<name>" (a string argument).
+/// Any other string is a literal account name the Scenario must create.
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum SlotBinding {
     View(ViewCall),
@@ -107,6 +121,8 @@ pub struct ViewCall {
 
 #[derive(Deserialize, Debug)]
 pub struct RuleCheck {
+    /// The contract methods the Rule is about. The call under test must be one of them.
+    pub methods: Vec<String>,
     pub slots: Vec<ObservationSlot>,
     pub condition: Condition,
 }
@@ -115,6 +131,7 @@ pub struct RuleCheck {
 pub struct ObservationSlot {
     pub name: String,
     pub kind: SlotKind,
+    pub bind: SlotBinding,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]

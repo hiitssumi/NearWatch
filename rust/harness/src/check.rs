@@ -5,24 +5,29 @@ use crate::request::{
     SlotBinding, SlotKind, When,
 };
 
-/// Checks that every slot the condition uses is declared, and every declared slot is bound
-/// by the Scenario with a binding of the matching kind. Runs before the sandbox starts.
+/// Checks that the call under test is one of the Rule's methods, that every slot the condition uses
+/// is declared, and that each slot's binding matches its kind. Runs before the sandbox starts.
 pub fn validate(check: &RuleCheck, scenario: &Scenario) -> Result<(), HarnessError> {
+    if check.methods.is_empty() {
+        return Err(HarnessError::invalid("the Rule check names no methods"));
+    }
+    if !check.methods.contains(&scenario.call.method) {
+        return Err(HarnessError::invalid(format!(
+            "Scenario {}: call.method is \"{}\", but this Rule is about {}",
+            scenario.id,
+            scenario.call.method,
+            check.methods.join(", ")
+        )));
+    }
     for slot in &check.slots {
-        match (slot.kind, scenario.bind.get(&slot.name)) {
-            (_, None) => {
-                return Err(HarnessError::invalid(format!(
-                    "slot \"{}\" is not bound by Scenario {}",
-                    slot.name, scenario.id
-                )))
-            }
-            (SlotKind::View, Some(SlotBinding::Account(_))) => {
+        match (slot.kind, &slot.bind) {
+            (SlotKind::View, SlotBinding::Account(_)) => {
                 return Err(HarnessError::invalid(format!(
                     "slot \"{}\" is a view slot but is bound to an account",
                     slot.name
                 )))
             }
-            (SlotKind::Balance, Some(SlotBinding::View(_))) => {
+            (SlotKind::Balance, SlotBinding::View(_)) => {
                 return Err(HarnessError::invalid(format!(
                     "slot \"{}\" is a balance slot but is bound to a view call",
                     slot.name
@@ -172,7 +177,9 @@ mod tests {
     #[test]
     fn compares_with_arithmetic_and_negative_intermediates() {
         let c = check(serde_json::json!({
-            "slots": [{"name": "r", "kind": "balance"}, {"name": "v", "kind": "view"}],
+            "methods": ["m"],
+            "slots": [{"name": "r", "kind": "balance", "bind": {"account": "$caller"}},
+                      {"name": "v", "kind": "view", "bind": {"view": {"method": "v", "args": {}}}}],
             "condition": {"compare": "<", "left": {"op": "sub",
                 "left": {"slot": "r", "when": "before"}, "right": {"slot": "r", "when": "after"}},
                 "right": {"slot": "v", "when": "after"}}
@@ -186,7 +193,8 @@ mod tests {
     #[test]
     fn all_any_and_booleans() {
         let c = check(serde_json::json!({
-            "slots": [{"name": "p", "kind": "view"}],
+            "methods": ["m"],
+            "slots": [{"name": "p", "kind": "view", "bind": {"view": {"method": "p", "args": {}}}}],
             "condition": {"all": [
                 {"compare": "==", "left": {"slot": "p", "when": "after"}, "right": {"number": "1"}},
                 {"any": [{"compare": "!=", "left": {"slot": "p", "when": "before"}, "right": {"number": "0"}},
@@ -201,11 +209,42 @@ mod tests {
     #[test]
     fn non_numeric_view_is_named_in_the_error() {
         let c = check(serde_json::json!({
-            "slots": [{"name": "o", "kind": "view"}],
+            "methods": ["m"],
+            "slots": [{"name": "o", "kind": "view", "bind": {"view": {"method": "o", "args": {}}}}],
             "condition": {"compare": "==", "left": {"slot": "o", "when": "after"}, "right": {"number": "0"}}
         }));
         let s = set(&[("o", "owner")], &[]);
         let e = evaluate(&c, &s, &s).unwrap_err();
         assert!(e.message.contains("slot \"o\" (after)"), "{}", e.message);
+    }
+
+    fn scenario(method: &str) -> Scenario {
+        serde_json::from_value(serde_json::json!({
+            "id": "S1", "setup": [],
+            "call": {"as": "alice", "method": method, "args": {}, "deposit": "0", "gas": "1"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_call_under_test_must_be_one_of_the_rules_methods() {
+        let c = check(serde_json::json!({
+            "methods": ["withdraw"],
+            "slots": [{"name": "w", "kind": "balance", "bind": {"account": "$caller"}}],
+            "condition": {"compare": "<", "left": {"slot": "w", "when": "after"}, "right": {"number": "0"}}
+        }));
+        assert!(validate(&c, &scenario("withdraw")).is_ok());
+        let e = validate(&c, &scenario("deposit")).unwrap_err();
+        assert!(e.message.contains("call.method is \"deposit\", but this Rule is about withdraw"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_binding_must_match_its_slot_kind() {
+        let c = check(serde_json::json!({
+            "methods": ["m"],
+            "slots": [{"name": "w", "kind": "view", "bind": {"account": "$caller"}}],
+            "condition": {"compare": "<", "left": {"slot": "w", "when": "after"}, "right": {"number": "0"}}
+        }));
+        assert!(validate(&c, &scenario("m")).unwrap_err().message.contains("view slot but is bound to an account"));
     }
 }

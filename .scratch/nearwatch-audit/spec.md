@@ -129,9 +129,9 @@ Each module below has a small interface and hides the work behind it.
 
 ### Scenarios are data, not code
 
-- A Scenario is an ordered list of sandbox actions: create a named account with a balance, call a contract method as a given account with given arguments, attached deposit and gas, and read a view method. An action may name an account that does not exist.
-- The harness records observations before and after the Scenario: results of named view calls, account balances, and which receipts failed.
-- A Rule check is a small comparison over those observations, written by the Rules agent, that is true when the Rule has been broken.
+- A Scenario is setup actions followed by one call under test. A setup action creates a named account with a balance, calls a contract method as a given account with given arguments, attached deposit and gas, or reads a view method. Any account named may be one that does not exist.
+- The harness records observations just before and just after the call under test: results of view calls, account balances, and which receipts failed. Before each observation it lets a few blocks pass, so gas refunds and returned deposits have landed.
+- A Rule check is a small comparison over those observations, written by the Rules agent, that is true when the Rule has been broken. It names the methods it is about, and the call under test must be one of them. For each observation it says what to read, in terms of the call under test (its signer, the contract, or one of its arguments) or a fixed account name. The Attacker chooses only the setup and the call (see `docs/adr/0003`).
 - The harness, not the Attacker, evaluates the Rule check. A Scenario is a Finding only if the Referee's own run reports the Rule check true. Otherwise it is a Lead.
 - Reasons: the Attacker cannot fake a Finding, no LLM-written code is executed on the builder's machine, and the slow Rust compile happens once.
 
@@ -287,7 +287,7 @@ Lean is dropped. The Rules agent writes the Formalization as a small executable 
 
 - A Rule's Property and its Rule check are two LLM-written versions of the same plain-English Rule. Nothing proves they mean the same thing.
 - The Formalization is written by an LLM reading the code. A Proven verdict is only as good as that reading.
-- The Attacker can only express attacks that fit the listed sandbox actions.
+- The Attacker can only express attacks that fit the listed sandbox actions, and a Rule check sees only what one call changes. A bug that needs two calls to interleave cannot be expressed.
 
 ### Open risk
 

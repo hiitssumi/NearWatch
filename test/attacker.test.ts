@@ -1,12 +1,13 @@
 // Seam 1, the Attacker: its rounds, budget and inputs, run from Recordings built on the hand-made one.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { rulesAgent } from "../src/agents/agents.ts";
 import { BUG_CLASSES } from "../src/agents/attacker.ts";
 import { runAudit } from "../src/audit.ts";
 import type { ScenarioOutcome } from "../src/domain.ts";
 import { RecordingGateway } from "../src/llm/recording.ts";
 import { loadRecording, type Recording, replayPorts, type ToolchainEntry } from "../src/replay/recording.ts";
-import { attackerRound } from "../src/schemas.ts";
+import { attackerRound, rulesAnswer } from "../src/schemas.ts";
 import { InvalidAnswer } from "../src/validate.ts";
 import { HAND_MADE, handMadeScenario, storedOutcome } from "./hand-made.ts";
 
@@ -33,7 +34,7 @@ async function audit(r: Recording) {
 
 async function attempt(bugClass: number) {
   const s = handMadeScenario(await loadRecording(HAND_MADE));
-  return { bugClass, actions: s.actions, bind: s.bind };
+  return { bugClass, setup: s.setup, call: s.call };
 }
 
 /** A copy of the hand-made outcome with the Rule check and the recorded balance after set. */
@@ -76,7 +77,7 @@ test("after a failed attempt the Attacker sees what the harness observed, and th
     [await run("S1", false, "4242"), await run("S2", true), await run("S2", true)],
   );
   const { result, prompts } = await audit(r);
-  assert.match(prompts[1]!, /S1 \(bug class 1\): actions/);
+  assert.match(prompts[1]!, /S1 \(bug class 1\): setup/);
   assert.match(prompts[1]!, /"user_recorded":"4242"/);
   assert.match(prompts[1]!, /Rule check: false/);
   assert.match(prompts[1]!, /1\. state not restored .* \[2\]/, "one attempt used, two left");
@@ -89,7 +90,7 @@ test("after a failed attempt the Attacker sees what the harness observed, and th
 });
 
 test("a Scenario that could not be run is shown to the Attacker with the harness's error", async () => {
-  const error = 'scenario.actions[0].balance is "ten", not a decimal integer string';
+  const error = 'scenario.setup[0].balance is "ten", not a decimal integer string';
   const r = await recording(
     [{ attempts: [await attempt(1)], skip: skipRest([1]) }, { attempts: [await attempt(1)] }, skipAll],
     [{ op: "runScenario", scenario: "S1", error }, await run("S2", true), await run("S2", true)],
@@ -131,30 +132,39 @@ test("the Attacker stops at the first claimed Finding for a Rule", async () => {
 });
 
 test("an Attacker round naming a closed or repeated bug class is invalid, so the Attacker is asked again", () => {
-  const actions = [{ action: "view", method: "owner", args: {} }];
-  assert.throws(() => attackerRound([1, 2])({ attempts: [{ bugClass: 3, actions, bind: {} }] }, ""), InvalidAnswer);
+  const setup = [{ action: "view", method: "owner", args: {} }];
+  const call = { as: "alice", method: "withdraw", args: {}, deposit: "0", gas: "1" };
+  assert.throws(() => attackerRound([1, 2])({ attempts: [{ bugClass: 3, setup, call }] }, ""), InvalidAnswer);
   assert.throws(
-    () => attackerRound([1, 2])({ attempts: [{ bugClass: 1, actions, bind: {} }], skip: [{ bugClass: 1, reason: "x" }] }, ""),
+    () => attackerRound([1, 2])({ attempts: [{ bugClass: 1, setup, call }], skip: [{ bugClass: 1, reason: "x" }] }, ""),
     /appears more than once/,
   );
+  assert.throws(() => attackerRound([1])({ attempts: [{ bugClass: 1, setup }] }, ""), /call: expected an object/);
   assert.deepEqual(attackerRound([1])({ attempts: [] }, "").skip, []);
 });
 
-// ---- The live Audit of the buggy vault (12 Nov 2026, recordings/live-attacker-buggy-vault.json) ----
 
-const LIVE = new URL("../recordings/live-attacker-buggy-vault.json", import.meta.url).pathname;
+// ---- Rule checks own their bindings ----
 
-test("the live Recording of the buggy vault replays to the same verdicts, with the planted bug found unaided", async () => {
-  const r = await loadRecording(LIVE);
-  const { result, prompts } = await audit(r);
-  assert.deepEqual(result.verdicts, { R1: "Broken", R2: "Broken", R3: "Unproven", R4: "Broken", R5: "Unproven" });
-  assert.deepEqual(result.findings.map((f) => f.scenario.id), ["S3", "S5", "S17"]);
+test("the Rules prompt's format example passes the validator, and the prompt says the Rules agent writes the bindings", async () => {
+  let prompt = "";
+  const llm = { ask: async (_a: string, p: string) => ((prompt = p), { answer: '{"rules":[]}', tokens: { input: 0, output: 0 } }) };
+  await rulesAgent({ llm, tokens: {}, log: () => {} }, "src", { moneyMethods: [], balanceStorage: [], privilegedMethods: [], standingNote: "n" });
+  const example = prompt.split("Example of the format only")[1]!.split("\n").slice(1).join("\n").split("\n\n")[0]!;
+  assert.doesNotThrow(() => rulesAnswer(JSON.parse(example), ""));
+  assert.match(prompt, /You write the bindings, not the attacker/);
+});
 
-  // S3 is the planted bug: a withdrawal to an account that does not exist, and the balance never comes back.
-  const s3 = result.findings[0]!;
-  assert.ok(s3.scenario.actions.some((a) => a.action === "call" && a.method === "withdraw"));
-  assert.ok(s3.outcome.observations.failedReceipts.some((f) => f.includes("doesn't exist")));
-
-  // The Attacker was told nothing about where the bug is.
-  assert.ok(prompts.every((p) => !/buggy|planted/i.test(p) && !p.includes(r.contract.path)));
+test("a Rule check binding must be a known reference or a plain account name, of the slot's kind", () => {
+  const ruleWith = (slot: object) => ({
+    rules: [{ id: "R1", text: "t", check: { methods: ["withdraw"], slots: [slot], condition: { compare: "<", left: { slot: "s", when: "after" }, right: { number: "0" } } } }],
+  });
+  const ok = { name: "s", kind: "balance", describe: "d", bind: { account: "$arg:receiver_id" } };
+  assert.doesNotThrow(() => rulesAnswer(ruleWith(ok), ""));
+  assert.doesNotThrow(() => rulesAnswer(ruleWith({ ...ok, bind: { account: "user" } }), ""));
+  assert.throws(() => rulesAnswer(ruleWith({ ...ok, bind: { account: "$receiver" } }), ""), /not a reference; use \$caller/);
+  assert.throws(() => rulesAnswer(ruleWith({ ...ok, bind: { view: { method: "balance_of", args: {} } } }), ""), /a balance slot must bind \{"account"/);
+  const view = { name: "s", kind: "view", describe: "d", bind: { view: { method: "balance_of", args: { account_id: "$who" } } } };
+  assert.throws(() => rulesAnswer(ruleWith(view), ""), /args\.account_id: "\$who" is not a reference/);
+  assert.throws(() => rulesAnswer({ rules: [{ ...ruleWith(ok).rules[0], check: { ...ruleWith(ok).rules[0]!.check, methods: [] } }] }, ""), /methods/);
 });

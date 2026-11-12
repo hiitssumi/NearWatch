@@ -36,10 +36,10 @@ export async function referee(
       log(`  ${scenario.id}: names unknown Rule ${scenario.rule}, kept as a Lead`);
       continue;
     }
-    const missing = rule.check.slots.map((s) => s.name).filter((n) => !(n in scenario.bind));
-    if (missing.length > 0) {
-      leads.push({ rule: rule.id, reason: `Scenario ${scenario.id} does not bind ${missing.join(", ")}`, scenario });
-      log(`  ${scenario.id}: does not bind ${missing.join(", ")}, kept as a Lead`);
+    if (!rule.check.methods.includes(scenario.call.method)) {
+      const why = `calls ${scenario.call.method}, but ${rule.id} is about ${rule.check.methods.join(", ")}`;
+      leads.push({ rule: rule.id, reason: `Scenario ${scenario.id} ${why}`, scenario });
+      log(`  ${scenario.id}: ${why}, kept as a Lead`);
       continue;
     }
     let outcome;
