@@ -19,11 +19,11 @@ export interface LiveGatewayOptions {
 }
 
 export class LiveGateway implements LlmGateway {
-  private readonly settings: Pick<Settings, "nearAiKey" | "baseUrl" | "models" | "prices">;
+  private readonly settings: Pick<Settings, "nearAiKey" | "baseUrl" | "models" | "prices"> & Partial<Pick<Settings, "requestExtras">>;
   private readonly fetch: FetchFn;
   private readonly sleep: (ms: number) => Promise<void>;
 
-  constructor(settings: Pick<Settings, "nearAiKey" | "baseUrl" | "models" | "prices">, options: LiveGatewayOptions = {}) {
+  constructor(settings: Pick<Settings, "nearAiKey" | "baseUrl" | "models" | "prices"> & Partial<Pick<Settings, "requestExtras">>, options: LiveGatewayOptions = {}) {
     this.settings = settings;
     this.fetch = options.fetch ?? ((url, init) => fetch(url, init));
     this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -39,6 +39,7 @@ export class LiveGateway implements LlmGateway {
     if (!price) throw new LlmCallError(`No price for model "${model}" in settings; refusing to call it.`);
 
     const body = JSON.stringify({
+      ...this.settings.requestExtras?.[model],
       model,
       messages: [
         { role: "system", content: SYSTEM },

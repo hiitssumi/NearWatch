@@ -10,9 +10,26 @@
     "reporter": "z-ai/glm-5.3"
   },
   "prices": {
-    "z-ai/glm-5.3": { "inputPerMillion": 1.8, "outputPerMillion": 5.75 },
-    "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": { "inputPerMillion": 0.3, "outputPerMillion": 1.2 },
-    "anthropic/claude-opus-5-5": { "inputPerMillion": 4, "outputPerMillion": 20 }
+    "z-ai/glm-5.3": {
+      "inputPerMillion": 1.8,
+      "outputPerMillion": 5.75
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": {
+      "inputPerMillion": 0.3,
+      "outputPerMillion": 1.2
+    },
+    "anthropic/claude-opus-5-5": {
+      "inputPerMillion": 4,
+      "outputPerMillion": 20
+    }
+  },
+  "requestExtras": {
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": {
+      "chat_template_kwargs": {
+        "thinking": false,
+        "enable_thinking": false
+      }
+    }
   },
   "spendCapUsd": 5,
   "parentAccount": "",

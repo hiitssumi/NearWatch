@@ -51,7 +51,7 @@ export function sandboxActions(setup: SandboxSetup): string {
   return `Before a Scenario's first action the sandbox holds: the contract, deployed to account "${setup.contract}",${init}
 and the accounts ${accounts}. You can sign calls as any of these accounts and as any account your Scenario creates.
 Actions (all amounts are yoctoNEAR as decimal strings; 1 NEAR = 1000000000000000000000000; gas is a decimal string, at most 300000000000000):
-- {"action":"createAccount","account":<short name such as "alice">,"balance":<yoctoNEAR>}
+- {"action":"createAccount","account":<short name such as "alice">,"balance":<yoctoNEAR>}  (the sandbox itself funds the new account; no other account pays)
 - {"action":"call","as":<account>,"method":<contract method>,"args":{...},"deposit":<yoctoNEAR>,"gas":<gas>}
 - {"action":"view","method":<contract view method>,"args":{...}}
 An action may name an account that does not exist (for example as a receiver). A failed call does not stop the Scenario.

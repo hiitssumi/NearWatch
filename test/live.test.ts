@@ -134,6 +134,22 @@ test("the live gateway calls the OpenAI-compatible endpoint with the agent's mod
   assert.ok(Math.abs(r.usd! - (1000 * 0.3 + 200 * 1.2) / 1e6) < 1e-12);
 });
 
+test("request extras from settings are sent only to their own model, and cannot replace the model or messages", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const fakeFetch: FetchFn = async (_url, init) => {
+    bodies.push(JSON.parse(init.body as string));
+    return reply('{"ok":true}');
+  };
+  const extras = { ds: { chat_template_kwargs: { thinking: false } } };
+  const gw = new LiveGateway(settings({ requestExtras: extras }), { fetch: fakeFetch });
+  await gw.ask("attacker", "hello");
+  await gw.ask("scout", "hello");
+  assert.deepEqual(bodies[0]!.chat_template_kwargs, { thinking: false });
+  assert.equal(bodies[1]!.chat_template_kwargs, undefined);
+  assert.throws(() => parseSettings({ ...rawSettings(), requestExtras: { ds: { model: "other" } } }), /may not set "model"/);
+  assert.deepEqual(parseSettings(rawSettings()).requestExtras, {});
+});
+
 test("the live gateway retries a rate limit and reports other HTTP errors clearly", async () => {
   let n = 0;
   const flaky: FetchFn = async () => (n++ === 0 ? new Response("slow down", { status: 429 }) : reply("{}"));

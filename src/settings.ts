@@ -22,6 +22,11 @@ export interface Settings {
   /** Price per model id. Every model in `models` must have one. */
   prices: Record<string, Price>;
   spendCapUsd: number;
+  /**
+   * Extra request fields per model id, merged into the chat completions body. Used to turn off the
+   * Attacker model's thinking, which otherwise runs past the call timeout on an Attacker round.
+   */
+  requestExtras: Record<string, Record<string, unknown>>;
   /** Testnet accounts (ticket 10). Optional until then. */
   parentAccount?: string;
   parentKey?: string;
@@ -69,6 +74,15 @@ export function parseSettings(raw: unknown, source = SETTINGS_FILE): Settings {
   const spendCapUsd = raw.spendCapUsd ?? DEFAULT_SPEND_CAP_USD;
   if (!nonNeg(spendCapUsd)) bad('"spendCapUsd" must be a number of dollars, 0 or more');
 
+  const extrasRaw = raw.requestExtras ?? {};
+  if (!isObj(extrasRaw)) bad('"requestExtras" must map model ids to objects of extra request fields');
+  const requestExtras: Record<string, Record<string, unknown>> = {};
+  for (const [model, extra] of Object.entries(extrasRaw as Record<string, unknown>)) {
+    if (!isObj(extra)) bad(`"requestExtras.${model}" must be an object`);
+    for (const k of ["model", "messages"]) if (k in (extra as object)) bad(`"requestExtras.${model}" may not set "${k}"`);
+    requestExtras[model] = extra as Record<string, unknown>;
+  }
+
   const opt = (k: "parentAccount" | "parentKey") => {
     const v = raw[k];
     if (v === undefined || v === "") return undefined;
@@ -82,6 +96,7 @@ export function parseSettings(raw: unknown, source = SETTINGS_FILE): Settings {
     models,
     prices,
     spendCapUsd: spendCapUsd as number,
+    requestExtras,
     parentAccount: opt("parentAccount"),
     parentKey: opt("parentKey"),
   };
@@ -110,5 +125,5 @@ export function priceCall(price: Price, tokens: { input: number; output: number 
 
 /** The settings safe to store in a Recording: everything except keys. */
 export function publicSettings(s: Settings): Record<string, unknown> {
-  return { baseUrl: s.baseUrl, models: s.models, prices: s.prices, spendCapUsd: s.spendCapUsd };
+  return { baseUrl: s.baseUrl, models: s.models, prices: s.prices, spendCapUsd: s.spendCapUsd, requestExtras: s.requestExtras };
 }
