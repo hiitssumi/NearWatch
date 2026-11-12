@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 04
 
-**Status:** needs-info
+**Status:** resolved
 
 - [x] The Attacker's inputs are the contract source, the Scout's map, the Rules, the list of sandbox actions, and the bug-class list. Nothing else. The Recording shows these inputs.
 - [x] The bug-class list holds the seven classes named in the spec.
@@ -45,8 +45,19 @@ Live runs of `rust/vaults/buggy`, about $1.40 in total:
   - **R2 Broken by S5: false.** The Scenario withdraws to bob but binds the "receiver" slot to alice.
   - **R4 Broken by S17: false.** It unpauses, deposits, then re-pauses, so the paused flag is true at both ends but not throughout.
 
-**Open decision (needs-info).** The spec says the Attacker cannot fake a Finding. S5 shows it can, by choosing which account or view a slot reads. S17 shows that a before/after check over many calls can be satisfied by changing context mid-window. Proposed fix:
-- A Scenario is setup actions, then a snapshot, then **exactly one call under test**.
-- The **Rules agent**, not the Attacker, writes each slot's binding, relative to that call: the caller, an argument such as `receiver_id`, or the contract.
+**Decision (12 Nov, builder chose the fix).** A Scenario is now setup actions plus **one call under test**. The Rule check names its methods and owns what each slot reads, through `$caller`, `$contract`, `$arg:<name>` or a fixed account name. The Attacker picks only the setup and the call. See `docs/adr/0003`, plus the spec and glossary updates.
 
-The Attacker then picks only the setup and the call. This changes the spec ("Scenarios are data"), the harness's binding code, both prompts, and the hand-made Recording. It costs about half a day. The alternative is to keep the current design and list "the Attacker chooses slot bindings" as a known limit in the README.
+Follow-up fixes from live runs 7–10:
+- The validator rejects `==`/`!=` on a NEAR balance. Run 7's only Finding was a refused withdraw-to-self that moved only gas.
+- The harness reports the whole error chain. Run 8's right attack failed in setup with "unable to broadcast"; the real cause was `NotEnoughBalance`, because 300 Tgas reserves about 0.3 NEAR. The Attacker prompt now says so.
+- The Rules prompt now includes the bug-class list, and says a check must not depend on the money having moved. A failed transfer returns NEAR to the contract, and GLM kept writing withdraw checks that only applied "when NEAR left the vault". **This is guidance to the Rules agent, not to the Attacker; the README (ticket 12) should say so.**
+
+Live runs 7–10 on the new design, about $1.70:
+- Run 7: one false Finding (the exact wallet comparison).
+- Run 8: none.
+- Run 9: one real Finding, not the planted bug.
+- Run 10, `recordings/live-attacker-buggy-vault.json`, $0.36. Replay matches, and a fast test covers it. It has **no false Findings**:
+  - **R2 Broken by S5, the planted bug, found unaided.** alice withdraws 1 NEAR to `nobody-nonexistent-account`. Her record falls from 5 to 4 NEAR, the receiver gets nothing, and the vault keeps the NEAR. On the fixed vault the same Scenario holds.
+  - **R4 Broken by S18, real but not planted.** NEAR attached to a call of the view method `balance_of` stays in the vault, credited to nobody. near-sdk rejects deposits only on `&mut self` methods. **The fixed vault has the same issue**, so ticket 14's "no Finding" will not hold as written.
+
+Total live spend on this ticket: about $3.10.

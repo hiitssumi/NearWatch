@@ -183,3 +183,29 @@ test("a Rule check that compares a NEAR balance exactly is invalid, since wallet
   assert.doesNotThrow(() => rulesAnswer(rules({ compare: ">", left: drop, right: { op: "add", left: gain, right: { number: "10000000000000000000000" } } }), ""));
   assert.doesNotThrow(() => rulesAnswer(rules({ compare: "!=", left: { slot: "credit", when: "after" }, right: { number: "0" } }), ""), "views may be compared exactly");
 });
+
+// ---- The live Audit of the buggy vault (12 Nov 2026, recordings/live-attacker-buggy-vault.json) ----
+
+const LIVE = new URL("../recordings/live-attacker-buggy-vault.json", import.meta.url).pathname;
+
+test("the live Recording of the buggy vault replays to the same verdicts: the planted bug, found unaided, and one real extra", async () => {
+  const r = await loadRecording(LIVE);
+  const { result, prompts } = await audit(r);
+  assert.deepEqual(result.verdicts, { R1: "Unproven", R2: "Broken", R3: "Unproven", R4: "Broken", R5: "Unproven" });
+  assert.deepEqual(result.findings.map((f) => f.scenario.id), ["S5", "S18"]);
+
+  // S5 is the planted bug: a withdrawal to an account that does not exist lowers the record, and nothing arrives.
+  const s5 = result.findings[0]!;
+  assert.equal(s5.scenario.call.method, "withdraw");
+  assert.equal(r.contract.path, "rust/vaults/buggy");
+  const { before, after, failedReceipts } = s5.outcome.observations;
+  assert.ok(BigInt(before.views.credit!) > BigInt(after.views.credit!), "the record went down");
+  assert.equal(after.balances.recv, "0");
+  assert.ok(failedReceipts.some((f) => f.includes("doesn't exist")));
+
+  // S18 is real but not planted: a deposit attached to a view method stays in the vault, credited to nobody.
+  assert.equal(result.findings[1]!.scenario.call.method, "balance_of");
+
+  // The Attacker was told nothing about where the bug is.
+  assert.ok(prompts.every((p) => !/buggy|planted/i.test(p) && !p.includes(r.contract.path)));
+});
