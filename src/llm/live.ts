@@ -11,7 +11,8 @@ export class LlmCallError extends Error {}
 const SYSTEM = "You are one agent in NearWatch, an audit of a NEAR smart contract. Answer with JSON only, no prose.";
 /** Transient failures (rate limit, server error, network) are retried this many times. */
 const TRANSIENT_RETRIES = 2;
-const TIMEOUT_MS = 5 * 60_000;
+/** Reasoning models can think for many minutes on a long prompt (the Rules agent has written 34k tokens). */
+const TIMEOUT_MS = 15 * 60_000;
 
 export interface LiveGatewayOptions {
   fetch?: FetchFn;
