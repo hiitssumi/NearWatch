@@ -87,6 +87,8 @@ pub enum SandboxAction {
         method: String,
         args: Args,
     },
+    /// Marks where the "before" observations are taken. At most one per Scenario.
+    Snapshot {},
 }
 
 #[derive(Deserialize, Debug)]

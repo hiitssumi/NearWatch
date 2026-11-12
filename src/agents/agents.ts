@@ -35,6 +35,18 @@ A Rule check has:
   where <expr> is {"slot":<slot name>,"when":"before"|"after"}, {"number":"<decimal integer string>"}, or {"op":"add"|"sub","left":<expr>,"right":<expr>}.
 Every slot the condition uses must be declared in "slots".
 
+How a Rule check is used: an attacker writes Scenarios (sequences of contract calls in a local sandbox) and binds each slot
+to a concrete view call or account. "before" is observed at a point the Scenario chooses (after any setup such as deposits),
+"after" once every call has run; gas refunds have landed by then, and an ordinary call costs well under 0.01 NEAR of gas.
+A Scenario whose observations make the check TRUE is reported as proof the Rule is broken.
+So a Rule check must stay FALSE in every Scenario where the contract behaves correctly, however that Scenario is built:
+- It must not be made true by other honest activity in the same window (another user's deposit or withdrawal, a payment
+  received from elsewhere, the owner using a legitimate power). Prefer slots that only the Rule's subject can change.
+- A Rule that applies only in some situation (for example while deposits are paused) must test that situation in the
+  condition itself (for example, the paused flag is true both before and after).
+- Allow for gas where a wallet balance is compared.
+Write at most 5 Rules: the ones that matter most for the money this contract holds.
+
 Example of the format only (an unrelated contract, not a Rule for this one):
 {"rules":[{"id":"R1","text":"An account's NEAR balance never falls by more than 1 NEAR in one Scenario.",
  "check":{"slots":[{"name":"alice_wallet","kind":"balance","describe":"alice's NEAR account balance"}],

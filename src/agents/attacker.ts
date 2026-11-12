@@ -54,8 +54,11 @@ Actions (all amounts are yoctoNEAR as decimal strings; 1 NEAR = 1000000000000000
 - {"action":"createAccount","account":<short name such as "alice">,"balance":<yoctoNEAR>}  (the sandbox itself funds the new account; no other account pays)
 - {"action":"call","as":<account>,"method":<contract method>,"args":{...},"deposit":<yoctoNEAR>,"gas":<gas>}
 - {"action":"view","method":<contract view method>,"args":{...}}
+- {"action":"snapshot"}  (marks where the "before" observations are taken; at most one)
 An action may name an account that does not exist (for example as a receiver). A failed call does not stop the Scenario.
-Observations: "before" is taken once the Scenario's opening createAccount actions have run; "after" once every action has run.`;
+Observations: "before" is taken at the snapshot action, or, if there is none, right after the Scenario's opening createAccount actions;
+"after" is taken once every action has run. Put setup (accounts, deposits) before the snapshot and the steps the Rule is about after it.
+Gas refunds and returned deposits have landed before each observation.`;
 }
 
 function ruleText(rule: Rule): string {

@@ -47,7 +47,9 @@ export interface Rule {
 export type SandboxAction =
   | { action: "createAccount"; account: string; balance: string }
   | { action: "call"; as: string; method: string; args: Record<string, unknown>; deposit: string; gas: string }
-  | { action: "view"; method: string; args: Record<string, unknown> };
+  | { action: "view"; method: string; args: Record<string, unknown> }
+  /** Marks where the "before" observations are taken. At most one per Scenario. */
+  | { action: "snapshot" };
 
 export type SlotBinding =
   | { view: { method: string; args: Record<string, unknown> } }
@@ -77,8 +79,9 @@ export interface ObservationSet {
 }
 
 /**
- * "before" is taken once the Scenario's opening createAccount actions have run, so a fresh account's
- * starting balance is visible; "after" is taken when every action has run. Each key is a slot name.
+ * "before" is taken at the Scenario's snapshot action or, without one, once its opening createAccount
+ * actions have run; "after" is taken when every action has run. Each key is a slot name. The harness
+ * lets a few blocks pass before each, so gas refunds and returned deposits have landed.
  */
 export interface Observations {
   before: ObservationSet;

@@ -21,12 +21,16 @@ use crate::request::{
 const REGISTRAR: &str = "registrar";
 const CONTRACT_BALANCE: NearToken = NearToken::from_near(100);
 const MAX_GAS: u64 = 300_000_000_000_000;
+/// Blocks produced before each observation, so receipts still in flight (gas refunds, a deposit
+/// returned after a failed call) have landed and balances are final.
+const SETTLE_BLOCKS: u64 = 3;
 
 /// A Scenario action with its amounts and account names already checked.
 enum Step {
     CreateAccount { account: AccountId, balance: NearToken },
     Call { signer: AccountId, method: String, args: Args, deposit: NearToken, gas: Gas },
     View { method: String, args: Args },
+    Snapshot,
 }
 
 enum Binding {
@@ -37,6 +41,12 @@ enum Binding {
 /// Checks the whole request before the sandbox starts, so a malformed Scenario costs nothing.
 fn prepare(req: &Request) -> Result<(Vec<Step>, Vec<(String, Binding)>), HarnessError> {
     check::validate(&req.check, &req.scenario)?;
+    let snapshots = req.scenario.actions.iter().filter(|a| matches!(a, SandboxAction::Snapshot {})).count();
+    if snapshots > 1 {
+        return Err(HarnessError::invalid(format!(
+            "scenario.actions has {snapshots} snapshot actions; at most one is allowed"
+        )));
+    }
     let steps = req
         .scenario
         .actions
@@ -45,6 +55,7 @@ fn prepare(req: &Request) -> Result<(Vec<Step>, Vec<(String, Binding)>), Harness
         .map(|(i, a)| {
             let at = format!("scenario.actions[{i}]");
             Ok(match a {
+                SandboxAction::Snapshot {} => Step::Snapshot,
                 SandboxAction::CreateAccount { account, balance } => Step::CreateAccount {
                     account: account_id(account, &format!("{at}.account"))?,
                     balance: yocto(balance, &format!("{at}.balance"))?,
@@ -232,6 +243,7 @@ impl Sandboxed {
                     self.failed.push(format!("{label}: view {method} failed: {e}"));
                 }
             }
+            Step::Snapshot => {}
         }
         Ok(())
     }
@@ -251,6 +263,7 @@ impl Sandboxed {
     }
 
     async fn observe(&self, bindings: &[(String, Binding)], when: &str) -> Result<ObservationSet, HarnessError> {
+        self.worker.fast_forward(SETTLE_BLOCKS).await.map_err(internal)?;
         let mut set = ObservationSet::default();
         for (slot, b) in bindings {
             match b {
@@ -308,8 +321,12 @@ pub async fn run(req: Request) -> Result<ScenarioOutcome, HarnessError> {
     let mut sb = Sandboxed::start(&req).await?;
     sb.failed.clear();
 
-    // "before" is taken once the Scenario's opening createAccount actions have run.
-    let opening = steps.iter().take_while(|s| matches!(s, Step::CreateAccount { .. })).count();
+    // "before" is taken at the Scenario's snapshot action, or, when it has none, once its opening
+    // createAccount actions have run.
+    let opening = match steps.iter().position(|s| matches!(s, Step::Snapshot)) {
+        Some(at) => at,
+        None => steps.iter().take_while(|s| matches!(s, Step::CreateAccount { .. })).count(),
+    };
     for (i, s) in steps.iter().enumerate().take(opening) {
         sb.step(i, s).await?;
     }

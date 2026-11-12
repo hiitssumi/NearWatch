@@ -49,7 +49,8 @@ function checkSlotsUsed(r: Rule): void {
 }
 
 const sandboxAction: Check<SandboxAction> = (v, p) => {
-  const kind = oneOf("createAccount", "call", "view")((v as { action?: unknown })?.action, `${p}.action`);
+  const kind = oneOf("createAccount", "call", "view", "snapshot")((v as { action?: unknown })?.action, `${p}.action`);
+  if (kind === "snapshot") return { action: kind };
   if (kind === "createAccount") return { action: kind, ...object({ account: str, balance: amount })(v, p) };
   if (kind === "call")
     return { action: kind, ...object({ as: str, method: str, args: anyObject, deposit: amount, gas: amount })(v, p) };
@@ -86,7 +87,17 @@ export const attackerRound =
   (v, p) => {
     const raw = v as { skip?: unknown };
     const round = object({
-      attempts: array(object({ bugClass: classNumber, actions: array(sandboxAction, { min: 1 }), bind: record(slotBinding) })),
+      attempts: array(
+        object({
+          bugClass: classNumber,
+          actions: (x, q) => {
+            const actions = array(sandboxAction, { min: 1 })(x, q);
+            if (actions.filter((a) => a.action === "snapshot").length > 1) throw new InvalidAnswer(`${q}: at most one snapshot action`);
+            return actions;
+          },
+          bind: record(slotBinding),
+        }),
+      ),
       skip: (x, q) => (x === undefined ? [] : array(object({ bugClass: classNumber, reason: str }))(x, q)),
     })({ ...(v as object), skip: raw?.skip }, p);
     const seen = new Set<number>();
