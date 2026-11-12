@@ -139,3 +139,22 @@ test("an Attacker round naming a closed or repeated bug class is invalid, so the
   );
   assert.deepEqual(attackerRound([1])({ attempts: [] }, "").skip, []);
 });
+
+// ---- The live Audit of the buggy vault (12 Nov 2026, recordings/live-attacker-buggy-vault.json) ----
+
+const LIVE = new URL("../recordings/live-attacker-buggy-vault.json", import.meta.url).pathname;
+
+test("the live Recording of the buggy vault replays to the same verdicts, with the planted bug found unaided", async () => {
+  const r = await loadRecording(LIVE);
+  const { result, prompts } = await audit(r);
+  assert.deepEqual(result.verdicts, { R1: "Broken", R2: "Broken", R3: "Unproven", R4: "Broken", R5: "Unproven" });
+  assert.deepEqual(result.findings.map((f) => f.scenario.id), ["S3", "S5", "S17"]);
+
+  // S3 is the planted bug: a withdrawal to an account that does not exist, and the balance never comes back.
+  const s3 = result.findings[0]!;
+  assert.ok(s3.scenario.actions.some((a) => a.action === "call" && a.method === "withdraw"));
+  assert.ok(s3.outcome.observations.failedReceipts.some((f) => f.includes("doesn't exist")));
+
+  // The Attacker was told nothing about where the bug is.
+  assert.ok(prompts.every((p) => !/buggy|planted/i.test(p) && !p.includes(r.contract.path)));
+});
