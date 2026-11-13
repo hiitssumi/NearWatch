@@ -2,7 +2,7 @@
 // hand-written Lean test material standing in for the Rules agent's and the Prover's answers.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_REFINEMENTS, runAudit } from "../src/audit.ts";
+import { auditOptionsFrom, MAX_REFINEMENTS, runAudit } from "../src/audit.ts";
 import type { AgentName, Rule } from "../src/domain.ts";
 import { RecordingGateway } from "../src/llm/recording.ts";
 import { loadRecording, type Recording, replayPorts, type ToolchainEntry } from "../src/replay/recording.ts";
@@ -174,4 +174,25 @@ test("a Rule check can say the signer is not the owner, and accounts are only co
   ] as const) {
     assert.throws(() => rulesAnswer(pauseRule(condition), ""), (e: Error) => e instanceof InvalidAnswer && message.test(e.message));
   }
+});
+
+// ---- The live run (ticket 08) ----
+
+test("the live Recording replays: one Conflict on the withdraw Rule, one Refinement, the old proof failing against it", async () => {
+  const r = await loadRecording(new URL("../recordings/live-conflict-buggy-vault.json", import.meta.url).pathname);
+  const result = await runAudit(r.contract.path, replayPorts(r), auditOptionsFrom(r.settings));
+  // The Rules agent numbered the spec's Rule 1 (withdraw) R3, and the owner Rule R4.
+  assert.deepEqual(result.verdicts, { R1: "Proven", R2: "Proven", R3: "Broken", R4: "Proven", R5: "Proven" });
+  assert.equal(result.conflicts.length, 1);
+  const [c] = result.conflicts;
+  assert.equal(c!.rule, "R3");
+  assert.equal(c!.finding, "S8");
+  assert.equal(c!.outcome, "resolved");
+  assert.equal(c!.refinements.length, 1);
+  assert.equal(c!.refinements[0]!.method, "withdraw");
+  assert.equal(c!.refinements[0]!.recheck.accepted, false);
+  assert.match(c!.refinements[0]!.property.statement, /withdrawStart/);
+  assert.ok(result.transcript.includes("  R3 ends Broken: a Finding outranks a proof."));
+  assert.ok(result.payouts.some((p) => p.to === "attacker" && p.reason === "R3 Broken"));
+  assert.equal(r.settings.conflicts, true);
 });
