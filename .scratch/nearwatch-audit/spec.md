@@ -191,6 +191,7 @@ Each module below has a small interface and hides the work behind it.
 - Methods: deposit, withdraw to a named receiver, a balance view, and an owner-only switch that pauses deposits. No owner method touches balances.
 - The planted bug: withdraw reduces the caller's recorded balance and sends the money with an asynchronous transfer, and nothing restores the balance when that transfer fails. A withdrawal to an account that does not exist is one way the transfer fails.
 - The fixed copy restores the balance in a callback when the transfer fails.
+- Both vaults keep NEAR attached to a call of a read-only method (such as `balance_of`), credited to nobody: near-sdk rejects attached NEAR only on methods that change state, and a read-only method cannot check for it without breaking ordinary view calls. This is accepted as real NEAR behaviour, not part of the planted bug. If an Audit of the fixed vault finds it, the result says so plainly.
 - Rule 1: a user's recorded balance only goes down by an amount that user actually received. Rule 2: the owner cannot reduce any user's balance.
 - This description is never given to the Attacker.
 
@@ -234,6 +235,7 @@ Fast tests use the replay toolchain and need only Node:
 - A Recording whose proof contains a placeholder ends with that proof rejected.
 - A Recording whose proof relies on an added axiom ends with that proof rejected.
 - A Recording whose Scenario does not make the Rule check true ends with a Lead and no Finding.
+- The shipped Recording of the fixed vault ends with no Finding, no Conflict, every Rule Proven, and the Attacker's attempts and skipped bug classes kept as Leads.
 - A Recording where the proof still passes after two Refinements ends with the proof withdrawn and the Rule Broken.
 - A Recording with no Finding and no proof for a Rule ends with Unproven and that share returned to the payer.
 - A Recording that reaches the spend cap ends with verdicts and no crash.
