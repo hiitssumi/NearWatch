@@ -3,7 +3,8 @@ import { parseArgs } from "node:util";
 import { auditOptionsFrom, runAudit } from "../audit.ts";
 import { loadRecording, replayPorts } from "../replay/recording.ts";
 
-const DEFAULT_RECORDING = new URL("../../recordings/hand-made.json", import.meta.url).pathname;
+/** The demo Recording: one full live Audit of the buggy vault, paid on NEAR testnet (ticket 11). */
+const DEFAULT_RECORDING = new URL("../../recordings/demo-buggy-vault.json", import.meta.url).pathname;
 
 const { positionals } = parseArgs({ allowPositionals: true });
 const path = positionals[0] ?? DEFAULT_RECORDING;
