@@ -322,3 +322,22 @@ test("the live counterexample Recording replays: the Prover's counterexample to 
   const before = await runAudit(t08.contract.path, replayPorts(t08), auditOptionsFrom(t08.settings));
   assert.deepEqual(result.payouts, before.payouts);
 });
+
+test("when one side fails, the other side stops at its next call, and the Audit reports the first failure", async () => {
+  // The Attacker's first exchange is missing, so its side fails at once; the Prover's side has all its answers.
+  const r = await recording(provedBoth, "finding", [...statements, ...proverAndReferee]);
+  r.exchanges = r.exchanges.filter((e) => e.agent !== "attacker");
+  const ports = replayPorts(r);
+  const asked: string[] = [];
+  let leanChecks = 0;
+  const llm = { ask: (agent: AgentName, prompt: string) => (asked.push(agent), ports.llm.ask(agent, prompt)) };
+  const toolchain = { ...ports.toolchain, checkLean: (...a: Parameters<typeof ports.toolchain.checkLean>) => (leanChecks++, ports.toolchain.checkLean(...a)) };
+  await assert.rejects(
+    runAudit(r.contract.path, { ...ports, llm, toolchain }, { prover: true, conflicts: true }),
+    (e: Error) => /Replay asked for exchange #1 of agent "attacker"/.test(e.message),
+  );
+  // The Formalization's call and its first Lean check were already under way when the Attacker failed; after
+  // them the Prover's side stopped: the Prover was never asked, and nothing more was checked.
+  assert.deepEqual(asked, ["scout", "rules", "attacker", "rules"]);
+  assert.ok(leanChecks <= 1, `at most the check already under way, not ${leanChecks}`);
+});

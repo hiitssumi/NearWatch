@@ -9,8 +9,14 @@ export type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 export class LlmCallError extends Error {}
 
 const SYSTEM = "You are one agent in NearWatch, an audit of a NEAR smart contract. Answer with JSON only, no prose.";
-/** Transient failures (rate limit, server error, network) are retried this many times. */
+/** A call that fails on the network (or times out) is retried this many times, after 2 s and then 4 s. */
 const TRANSIENT_RETRIES = 2;
+/**
+ * The waits before retrying a model that answers "overloaded" (429) or "unavailable" (5xx): exponential, about
+ * 6.5 minutes in all. NEAR AI's models do go away for minutes at a time, and its own message asks for
+ * exponential backoff; two quick retries ended a live Audit when the Attacker's model was briefly unavailable.
+ */
+export const OVERLOAD_WAITS_MS = [5, 10, 20, 40, 80, 120, 120].map((s) => s * 1000);
 /**
  * Reasoning models can think for many minutes on a long prompt (the Rules agent has written 34k tokens).
  * Answers are streamed, so Node's own 300-second wait for response headers never applies; a call fails
@@ -58,6 +64,7 @@ export class LiveGateway implements LlmGateway {
       ],
     });
 
+    let busy = 0;
     for (let attempt = 0; ; attempt++) {
       let res: Response;
       const idle = new AbortController();
@@ -88,11 +95,13 @@ export class LiveGateway implements LlmGateway {
       clearTimeout(idleTimer);
       if (!res.ok) {
         const detail = (await res.text().catch(() => "")).slice(0, 300);
-        if ((res.status === 429 || res.status >= 500) && attempt < TRANSIENT_RETRIES) {
-          await this.sleep(2000 * (attempt + 1));
+        if ((res.status === 429 || res.status >= 500) && busy < OVERLOAD_WAITS_MS.length) {
+          await this.sleep(OVERLOAD_WAITS_MS[busy++]!);
+          attempt--; // A busy model's waits do not use up the network retries.
           continue;
         }
-        throw new LlmCallError(`${label}: ${model} answered HTTP ${res.status}: ${detail}`);
+        const tried = busy > 0 ? ` (after ${busy} retries over ${Math.round(OVERLOAD_WAITS_MS.slice(0, busy).reduce((a, b) => a + b, 0) / 1000)} s)` : "";
+        throw new LlmCallError(`${label}: ${model} answered HTTP ${res.status}${tried}: ${detail}`);
       }
 
       const { answer, tokens } = parsed!;

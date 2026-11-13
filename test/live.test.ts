@@ -8,7 +8,7 @@ import { auditOptionsFrom, runAudit } from "../src/audit.ts";
 import { readContract, UnsupportedContract } from "../src/contract.ts";
 import type { AgentName } from "../src/domain.ts";
 import { liveAudit } from "../src/live-audit.ts";
-import { type FetchFn, LiveGateway, LlmCallError } from "../src/llm/live.ts";
+import { type FetchFn, LiveGateway, LlmCallError, OVERLOAD_WAITS_MS } from "../src/llm/live.ts";
 import type { LlmAnswer, LlmGateway } from "../src/ports.ts";
 import { FakePayer, loadRecording, type Recording, ReplayToolchain, replayPorts } from "../src/replay/recording.ts";
 import { parseSettings, type Settings, SettingsError } from "../src/settings.ts";
@@ -211,6 +211,28 @@ test("the live gateway retries a rate limit and reports other HTTP errors clearl
 
   const denied = new LiveGateway(settings(), { fetch: async () => new Response("bad key", { status: 401 }), sleep: async () => {} });
   await assert.rejects(denied.ask("scout", "x"), (e: Error) => e instanceof LlmCallError && /HTTP 401: bad key/.test(e.message));
+
+  // A model that stays overloaded is retried with exponential waits, about 6.5 minutes in all, then reported.
+  const waits: number[] = [];
+  let calls = 0;
+  const down = new LiveGateway(settings(), {
+    fetch: async () => {
+      calls++;
+      return new Response('{"error":{"message":"The model is currently unavailable."}}', { status: 502 });
+    },
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  });
+  await assert.rejects(down.ask("attacker", "x"), (e: Error) => e instanceof LlmCallError && /HTTP 502 \(after 7 retries over 395 s\): .*currently unavailable/.test(e.message));
+  assert.deepEqual(waits, OVERLOAD_WAITS_MS);
+  assert.deepEqual(waits.map((ms) => ms / 1000), [5, 10, 20, 40, 80, 120, 120]);
+  assert.equal(calls, 8);
+  // One that comes back within the waits is answered.
+  let tries = 0;
+  const back = new LiveGateway(settings(), { fetch: async () => (++tries < 4 ? new Response("overloaded", { status: 429 }) : reply("{}")), sleep: async () => {} });
+  assert.equal((await back.ask("attacker", "x")).answer, "{}");
+  assert.equal(tries, 4);
 });
 
 // ---- A live run with a fake model, recorded, then replayed ----

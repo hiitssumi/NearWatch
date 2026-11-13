@@ -146,10 +146,38 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   // The Attacker works on the real contract; the Rules agent's Formalization and the Prover work on Lean.
   // Neither needs the other, so they run side by side. Each side logs to its own buffer and spends from
   // its own lane, so the transcript and the spend cap come out the same however their calls interleave.
+  // If one side fails (say its model stays unavailable), the other must stop too, not go on spending after
+  // the Audit has failed: every call either side makes first checks that neither side has failed.
+  let sideFailed = false;
+  const stopIfFailed = () => {
+    if (sideFailed) throw new SideStopped();
+  };
+  const sideLlm: AuditPorts["llm"] = {
+    ask: (agent, prompt) => {
+      stopIfFailed();
+      return ports.llm.ask(agent, prompt);
+    },
+  };
+  const sideToolchain: AuditPorts["toolchain"] = {
+    runScenario: (path, scenario, check) => {
+      stopIfFailed();
+      return ports.toolchain.runScenario(path, scenario, check);
+    },
+    checkLean: (formalization, property, body) => {
+      stopIfFailed();
+      return ports.toolchain.checkLean(formalization, property, body);
+    },
+  };
+  const watched = <T>(work: Promise<T>): Promise<T> =>
+    work.catch((e) => {
+      sideFailed = true;
+      throw e;
+    });
   const side = (tag: string, lane?: Lane) => {
     const lines: string[] = [];
     const sideCtx: AskContext = {
       ...ctx,
+      llm: sideLlm,
       log: (l: string) => {
         lines.push(l);
         onLine(`[${tag}] ${l}`);
@@ -168,17 +196,22 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
 
   const attacking =
     map && rules.length > 0
-      ? attacker(attackSide.ctx, ports.toolchain, contractPath, options.setup ?? VAULT_SETUP, source, map, rules)
+      ? attacker(attackSide.ctx, sideToolchain, contractPath, options.setup ?? VAULT_SETUP, source, map, rules)
       : Promise.resolve({ claimed: [], leads: [], answered: false });
   const proving = (async (): Promise<{ formal: Formalization | null; proofs: Proof[]; attempts: ProofAttempt[] }> => {
     if (!options.prover || !map || rules.length === 0) return { formal: null, proofs: [], attempts: [] };
-    const formal = await formalize(formalSide.ctx, ports.toolchain, source, map, rules);
+    const formal = await formalize(formalSide.ctx, sideToolchain, source, map, rules);
     if (!formal) return { formal, proofs: [], attempts: [] };
-    const proved = await prover(proverSide.ctx, ports.toolchain, formal, rules);
+    const proved = await prover(proverSide.ctx, sideToolchain, formal, rules);
     if (proved.answered) ran.add("prover");
     return { formal, proofs: proved.proofs, attempts: proved.attempts };
   })();
-  const [attack, { formal, proofs, attempts }] = await Promise.all([attacking, proving]);
+  // Both sides are waited for, so a failed Audit has stopped all its work before it reports the failure.
+  const [attacked, proved] = await Promise.allSettled([watched(attacking), watched(proving)]);
+  for (const r of [attacked, proved]) if (r.status === "rejected" && !(r.reason instanceof SideStopped)) throw r.reason;
+  if (attacked.status === "rejected" || proved.status === "rejected") throw new Error("both sides stopped without an error");
+  const attack = attacked.value;
+  const { formal, proofs, attempts } = proved.value;
   const proofAttempts = [...attempts];
   if (attackSide.ctx.lane?.capReached || proofLane?.capReached) budget.capReached = true;
 
@@ -288,6 +321,13 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     report,
     transcript,
   };
+}
+
+/** Thrown into one side of the side-by-side part when the other side has failed. */
+class SideStopped extends Error {
+  constructor() {
+    super("stopped because the other side of the Audit failed");
+  }
 }
 
 /** Refinements per Conflict before a proof that still passes is withdrawn. */
