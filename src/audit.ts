@@ -2,7 +2,8 @@ import { type Formalization, formalize, refine, rulesAgent, scout } from "./agen
 import { attacker } from "./agents/attacker.ts";
 import { type AskContext, type Budget, type Lane, newBudget, newLane } from "./agents/ask.ts";
 import { proveOrRefute, prover } from "./agents/prover.ts";
-import type { AgentName, AuditResult, Conflict, Counterexample, Finding, Lead, Proof, Refinement, Rule, SandboxSetup, TokenUse } from "./domain.ts";
+import { renderReport, type ReportFacts, reporter } from "./agents/reporter.ts";
+import type { AgentName, AuditResult, Conflict, Counterexample, Finding, Lead, Proof, ProofAttempt, Refinement, Rule, SandboxSetup, TokenUse } from "./domain.ts";
 import { negatedProperty, theoremName } from "./lean.ts";
 import { formatNear, ledger } from "./ledger.ts";
 import type { AuditPorts } from "./ports.ts";
@@ -33,6 +34,13 @@ export interface AuditOptions {
    */
   counterexamples?: boolean;
   /**
+   * After the verdicts, have the Reporter write the report. Live Audits always do. Off by default so that
+   * older Recordings, which hold no Reporter exchange, still replay; a Recording stores it.
+   */
+  reporter?: boolean;
+  /** The Audit's folder, named in the report's commands to re-run a Scenario. A Recording stores it. */
+  folder?: string;
+  /**
    * Called with each transcript line as it happens, so a long Audit can be watched. Lines from the part
    * that runs side by side arrive at once, tagged with their side; the transcript still prints them in a
    * fixed order once both sides are done. Never stored in a Recording.
@@ -48,6 +56,8 @@ export function auditOptionsFrom(settings: Record<string, unknown>): AuditOption
   if (settings.prover === true) o.prover = true;
   if (settings.conflicts === true) o.conflicts = true;
   if (settings.counterexamples === true) o.counterexamples = true;
+  if (settings.reporter === true) o.reporter = true;
+  if (typeof settings.folder === "string") o.folder = settings.folder;
   return o;
 }
 
@@ -56,7 +66,7 @@ export function auditOptionsFrom(settings: Record<string, unknown>): AuditOption
  * Order: Scout, Rules agent, then side by side the Attacker and (the Rules agent's Formalization, then) the
  * Prover, then the Referee, any Conflict with its Refinements, and the Payouts. Replay reads each agent's
  * exchanges and each kind of toolchain outcome in its own order, so the side-by-side part replays exactly.
- * The Reporter arrives in a later ticket.
+ * Then, in live Audits, the Reporter writes the report.
  */
 export async function runAudit(contractPath: string, ports: AuditPorts, options: AuditOptions = {}): Promise<AuditResult> {
   const transcript: string[] = [];
@@ -113,6 +123,8 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
       properties: [],
       proofs: [],
       conflicts: [],
+      proofAttempts: [],
+      report: null,
       transcript,
     };
   }
@@ -144,15 +156,16 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     map && rules.length > 0
       ? attacker(attackSide.ctx, ports.toolchain, contractPath, options.setup ?? VAULT_SETUP, source, map, rules)
       : Promise.resolve({ claimed: [], leads: [], answered: false });
-  const proving = (async (): Promise<{ formal: Formalization | null; proofs: Proof[] }> => {
-    if (!options.prover || !map || rules.length === 0) return { formal: null, proofs: [] };
+  const proving = (async (): Promise<{ formal: Formalization | null; proofs: Proof[]; attempts: ProofAttempt[] }> => {
+    if (!options.prover || !map || rules.length === 0) return { formal: null, proofs: [], attempts: [] };
     const formal = await formalize(formalSide.ctx, ports.toolchain, source, map, rules);
-    if (!formal) return { formal, proofs: [] };
+    if (!formal) return { formal, proofs: [], attempts: [] };
     const proved = await prover(proverSide.ctx, ports.toolchain, formal, rules);
     if (proved.answered) ran.add("prover");
-    return { formal, proofs: proved.proofs };
+    return { formal, proofs: proved.proofs, attempts: proved.attempts };
   })();
-  const [attack, { formal, proofs }] = await Promise.all([attacking, proving]);
+  const [attack, { formal, proofs, attempts }] = await Promise.all([attacking, proving]);
+  const proofAttempts = [...attempts];
   if (attackSide.ctx.lane?.capReached || proofLane?.capReached) budget.capReached = true;
 
   if (options.prover) {
@@ -187,12 +200,35 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   const conflicts: Conflict[] = [];
   for (const detected of options.conflicts ? result.conflicts : []) {
     const rule = rules.find((r) => r.id === detected.rule)!;
-    conflicts.push(await settleConflict(ctx, ports, source, rule, formal!, detected, options.counterexamples === true));
+    conflicts.push(await settleConflict(ctx, ports, source, rule, formal!, detected, options.counterexamples === true, proofAttempts));
   }
 
   log("");
   log("== Verdicts ==");
   for (const r of rules) log(`  ${r.id}: ${result.verdicts[r.id]}`);
+
+  let report: string | null = null;
+  if (options.reporter) {
+    log("");
+    log("== Reporter ==");
+    const facts: ReportFacts = {
+      contractPath,
+      folder: options.folder ?? null,
+      rules,
+      verdicts: result.verdicts,
+      findings: result.findings,
+      leads,
+      conflicts,
+      proofAttempts,
+    };
+    const words = await reporter(ctx, facts);
+    if (words) {
+      ran.add("reporter");
+      // Rendered after the Reporter's call, so the costs it gives include the report itself.
+      report = renderReport(facts, words, { totalUsd: budget.spentUsd, capUsd: budget.capUsd, byAgent: budget.byAgent });
+      log(`  Report written (${report.split("\n").length} lines): ${options.folder ? `${options.folder}/report.md` : "report.md in the Audit's folder"}`);
+    } else log("  No report: the Reporter gave no valid answer. Its share returns to the payer.");
+  }
 
   logCosts(log, tokens, budget);
 
@@ -219,6 +255,8 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     properties: formal?.properties ?? [],
     proofs: result.proofs,
     conflicts,
+    proofAttempts,
+    report,
     transcript,
   };
 }
@@ -239,6 +277,7 @@ async function settleConflict(
   formal: Formalization,
   detected: DetectedConflict,
   counterexamples: boolean,
+  attempts: ProofAttempt[],
 ): Promise<Conflict> {
   const { log } = ctx;
   const { finding, proof } = detected;
@@ -300,7 +339,7 @@ async function settleConflict(
     }
   }
   const conflict: Conflict = { rule: rule.id, finding: finding.scenario.id, proof, explanation, refinements, outcome };
-  if (counterexamples && resolvedBy) conflict.afterRefinement = await afterRefinement(ctx, ports, rule, finding, resolvedBy, refinements.length);
+  if (counterexamples && resolvedBy) conflict.afterRefinement = await afterRefinement(ctx, ports, rule, finding, resolvedBy, refinements.length, attempts);
   log(`  ${rule.id} ends Broken: a Finding outranks a proof.`);
   return conflict;
 }
@@ -317,6 +356,7 @@ async function afterRefinement(
   finding: Finding,
   refined: Formalization,
   n: number,
+  attempts: ProofAttempt[],
 ): Promise<NonNullable<Conflict["afterRefinement"]>> {
   const { log } = ctx;
   const property = refined.properties[0]!;
@@ -325,6 +365,7 @@ async function afterRefinement(
   log(`== Prover: the restated ${rule.id} against Refinement ${n} ==`);
   log(`  (The Prover may prove it, or give a counterexample: values for which Lean confirms it is false.)`);
   const found = await proveOrRefute(ctx, ports.toolchain, refined, rule, finding);
+  attempts.push(found.attempt);
   const spent = (ctx.budget?.byAgent.prover ?? 0) - spentBefore;
   log(`  Cost of this step: $${spent.toFixed(4)}`);
 

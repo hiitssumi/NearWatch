@@ -69,7 +69,7 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
   }
   const toolchain = new RecordingToolchain(continued?.toolchain ?? liveToolchain);
   const llm = new RecordingGateway(continued?.llm ?? liveLlm);
-  const options: AuditOptions = { spendCapUsd: settings.spendCapUsd, prover: true, conflicts: true, counterexamples: true };
+  const options: AuditOptions = { spendCapUsd: settings.spendCapUsd, prover: true, conflicts: true, counterexamples: true, reporter: true, folder: req.outDir };
   // Stored in the Recording, so anyone replaying it can see which part was live in this run.
   const continuation = () =>
     continued && {
@@ -120,6 +120,7 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
     // Saved even when the Audit fails part-way, so the money spent is not lost.
     await saveRecording();
   }
+  if (result.report !== null) await writeFile(join(req.outDir, "report.md"), result.report);
   await writeFile(join(req.outDir, "scout-map.json"), `${JSON.stringify(result.scoutMap, null, 2)}\n`);
   await writeFile(join(req.outDir, "rules.json"), `${JSON.stringify(result.rules, null, 2)}\n`);
   if (result.formalization !== null) {

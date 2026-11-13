@@ -235,6 +235,8 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
     { agent: "rules", answer: refinementAnswer(R1_REFINED.statement), tokens: { input: 4000, output: 900 }, usd: 0.012, ...glm },
     { agent: "prover", answer: counterexampleAnswer(), tokens: { input: 5000, output: 700 }, usd: 0.03, model: "opus" },
     { agent: "referee", answer: JSON.stringify({ samePath: true, why: SAME_PATH }), tokens: { input: 1200, output: 60 }, usd: 0.002, ...glm },
+    { agent: "reporter", answer: "not json", tokens: { input: 3000, output: 10 }, usd: 0.001, ...glm },
+    { agent: "reporter", answer: REPORT_WORDS, tokens: { input: 3100, output: 400 }, usd: 0.006, ...glm },
   ]);
   const outDir = await tempDir();
   const { result, recordingPath, notes } = await liveAudit({
@@ -247,17 +249,21 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
 
   const count = (agent: AgentName) => fake.calls.filter((a) => a === agent).length;
   assert.deepEqual(
-    ["scout", "rules", "attacker", "prover", "referee"].map((a) => count(a as AgentName)),
-    [2, 3, 2, 3, 2],
+    ["scout", "rules", "attacker", "prover", "referee", "reporter"].map((a) => count(a as AgentName)),
+    [2, 3, 2, 3, 2, 2],
   );
   assert.deepEqual(fake.calls.slice(0, 3), ["scout", "scout", "rules"], "the Scout, then the Rules agent, before anything runs side by side");
-  assert.deepEqual(fake.calls.slice(-4), ["referee", "rules", "prover", "referee"], "after the Referee: the explanation, the Refinement, the counterexample, the comparison");
+  assert.deepEqual(
+    fake.calls.slice(-6),
+    ["referee", "rules", "prover", "referee", "reporter", "reporter"],
+    "after the Referee: the explanation, the Refinement, the counterexample, the comparison, then the Reporter (retried once)",
+  );
 
   assert.deepEqual(result!.verdicts, { R1: "Broken", R2: "Proven" });
   assert.deepEqual(result!.scoutMap?.moneyMethods, ["deposit", "withdraw"]);
   assert.match(result!.scoutMap!.standingNote, /deployed account/);
   assert.deepEqual(result!.rules.map((r) => r.id), ["R1", "R2"]);
-  assert.ok(result!.transcript.includes("  Total spend: $0.1053 (cap $5.00)"));
+  assert.ok(result!.transcript.includes("  Total spend: $0.1123 (cap $5.00)"));
 
   // One Conflict, one Refinement, the old proof failing against it.
   assert.equal(result!.conflicts.length, 1);
@@ -295,11 +301,11 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   assert.ok(t.some((l) => l.includes("The Attacker and the Prover run side by side")));
 
   const recording = await loadRecording(recordingPath);
-  assert.equal(recording.exchanges.length, 12);
+  assert.equal(recording.exchanges.length, 14);
   assert.ok(recording.exchanges.every((e) => typeof e.ms === "number"), "each exchange's time is recorded");
   assert.equal(recording.exchanges[0]!.model, "glm");
   assert.match(recording.exchanges[1]!.prompt!, /previous answer was invalid/);
-  const refinePrompt = recording.exchanges.at(-3)!.prompt!;
+  const refinePrompt = recording.exchanges.at(-5)!.prompt!;
   assert.match(refinePrompt, /There is a Conflict on R1/);
   assert.match(refinePrompt, /ONLY the call "withdraw"/);
   assert.match(refinePrompt, /start step and a resolve step/);
@@ -327,6 +333,29 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   const conflictsFile = JSON.parse(await readFile(join(outDir, "conflicts.json"), "utf8"));
   assert.equal(conflictsFile[0].outcome, "resolved");
   assert.equal(conflictsFile[0].afterRefinement.counterexample.samePath, true);
+  // The report: the Reporter's words among facts written by code, in the Audit's folder, and the transcript says where.
+  const report = await readFile(join(outDir, "report.md"), "utf8");
+  assert.equal(report, result!.report);
+  assert.ok(t.includes(`  Report written (${report.split("\n").length} lines): ${outDir}/report.md`));
+  assert.ok(t.some((l) => l.startsWith("  (invalid answer from reporter:")), "an invalid answer is retried");
+  for (const part of [
+    "| R1 | Broken |",
+    "| R2 | Proven |",
+    "Alice's withdrawal to a missing account",
+    `- Re-run it in a fresh sandbox: \`npm run scenario -- ${outDir}/scenarios/S1.json\``,
+    "### R1: Finding S1 against an accepted proof",
+    "- Outcome: resolved: the old proof no longer passes against Refinement 1.",
+    "it follows the same path as the Finding (compared by an LLM)",
+    "The proof covers that description, not the contract's code.",
+    "## Leads",
+    "The Audit's LLM calls cost $0.1123 in all (cap $5.00), including this report.",
+    "| R1 | first Formalization | 1 | $0.0220 |",
+    "| R1 | Refinement | 1 | $0.0300 |",
+  ]) {
+    assert.ok(report.includes(part), `the report has: ${part}`);
+  }
+  assert.ok(report.indexOf("## Findings") < report.indexOf("## Leads"), "Leads are listed apart from Findings");
+  assert.ok(result!.payouts.some((p) => p.to === "reporter"), "the Reporter ran, so it is paid");
   const cxFile = await readFile(join(outDir, "refinements", "R1-refinement-1-counterexample.lean"), "utf8");
   assert.match(cxFile, /^-- Counterexample to the restated R1: HOLDS \(Lean confirms/);
   assert.match(cxFile, /-- Same path as Finding S1: YES/);
@@ -357,20 +386,21 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   // Continuing: a Recording that stops before the counterexample (as ticket 08's does) is continued, and only the
   // Prover's counterexample and the comparison are asked live. The result is the same, and the Recording says so.
   const earlier = structuredClone(recording);
-  earlier.exchanges = earlier.exchanges.slice(0, -2);
+  earlier.exchanges = earlier.exchanges.slice(0, -4);
   earlier.toolchain = earlier.toolchain.filter((t) => t.op !== "checkLean" || t.property !== "R1_counterexample");
   const earlierPath = join(await tempDir(), "earlier.json");
   await writeFile(earlierPath, JSON.stringify(earlier));
-  const liveRest = new Scripted(recording.exchanges.slice(-2).map(({ agent, answer, tokens, usd, model }) => ({ agent, answer, tokens, usd, model })));
+  const liveRest = new Scripted(recording.exchanges.slice(-4).map(({ agent, answer, tokens, usd, model }) => ({ agent, answer, tokens, usd, model })));
   const cont = await liveAudit({
     contractPath: fixture("vault.rs"),
-    outDir: await tempDir(),
+    // The same folder, so the report names the same Scenario files (the earlier files were checked above).
+    outDir,
     settings: settings(),
     llm: () => liveRest,
     toolchain: new ReplayToolchain([storedLean("counterexample-R1"), storedLean("counterexample-R1")]),
     continueFrom: earlierPath,
   });
-  assert.deepEqual(liveRest.calls, ["prover", "referee"], "only the new step is asked live");
+  assert.deepEqual(liveRest.calls, ["prover", "referee", "reporter", "reporter"], "only the new steps are asked live");
   assert.deepEqual(cont.result!.transcript, result!.transcript);
   assert.deepEqual(cont.result!.conflicts, result!.conflicts);
   const contRecording = await loadRecording(cont.recordingPath);
@@ -378,7 +408,7 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
     recording: earlierPath,
     replayedExchanges: 10,
     replayedPromptsChanged: 0,
-    liveExchanges: 2,
+    liveExchanges: 4,
     replayedToolchain: 10,
     liveToolchain: 2,
   });
@@ -388,6 +418,15 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
 
 const EXPLANATION =
   "The Scenario lowered alice's recorded balance by 1 NEAR while the transfer to the missing account failed, so nobody received it. The model treats withdraw as one step in which the transfer always lands.";
+const REPORT_WORDS = JSON.stringify({
+  summary: "One of the vault's two Rules is broken. The Attacker broke it in a sandbox, and the Prover's counterexample agrees.",
+  rules: [
+    { rule: "R1", text: "Withdrawals must only lower a balance by what the receiver gets. It is Broken." },
+    { rule: "R2", text: "The owner alone may pause deposits. It is Proven against the Lean description." },
+  ],
+  findings: [{ scenario: "S1", text: "Alice's withdrawal to a missing account failed, but her recorded balance stayed lowered." }],
+  conflicts: [{ rule: "R1", text: "The first description treated withdraw as one step, so a proof passed; the refined one splits it." }],
+});
 const SAME_PATH = "Both withdraw to an account whose transfer then fails, and the caller's balance is not restored.";
 
 // ---- Spend cap and retries, from Recordings ----

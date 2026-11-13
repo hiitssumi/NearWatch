@@ -7,7 +7,7 @@
 // counterexample: values to apply the Property to, and tactics showing that is false. The toolchain
 // assembles that file too, from the negated statement, so a counterexample cannot change the Property either.
 
-import type { Finding, Proof, Property, Rule } from "../domain.ts";
+import type { Finding, Proof, ProofAttempt, Property, Rule } from "../domain.ts";
 import { assembleLeanFile, counterexampleBody, negatedProperty, theoremName } from "../lean.ts";
 import type { Toolchain } from "../ports.ts";
 import { judgeLeanOutcome, screenProofBody } from "../proof-rules.ts";
@@ -28,6 +28,8 @@ export interface ProverResult {
   proofs: Proof[];
   /** True when the Prover gave at least one valid answer, so it counts as having run. */
   answered: boolean;
+  /** What each Property's rounds cost. */
+  attempts: ProofAttempt[];
 }
 
 interface Attempt {
@@ -81,9 +83,11 @@ async function rounds<T>(
   rule: string,
   ask: (history: Attempt[]) => string,
   attempt: (answer: string) => Promise<Tried<T>>,
-): Promise<{ found: T | null; answered: boolean; stoppedBy: string; elapsed: number }> {
+): Promise<{ found: T | null; answered: boolean; stoppedBy: string; elapsed: number; rounds: number; usd: number }> {
   const history: Attempt[] = [];
   let elapsed = 0;
+  let spent = 0;
+  let asked = 0;
   let answered = false;
   let stoppedBy = `${PROVER_ROUNDS} rounds`;
   for (let round = 1; round <= PROVER_ROUNDS; round++) {
@@ -97,6 +101,8 @@ async function rounds<T>(
     }
     const { answer, tokens, usd, ms: askMs = 0 } = await ctx.llm.ask("prover", ask(history));
     charge(ctx, "prover", usd);
+    asked++;
+    spent += usd ?? 0;
     const total = (ctx.tokens.prover ??= { input: 0, output: 0 });
     total.input += tokens.input;
     total.output += tokens.output;
@@ -108,12 +114,12 @@ async function rounds<T>(
     const cost = `${tokens.input} in, ${tokens.output} out${usd === undefined ? "" : `, $${usd.toFixed(4)}`}, ${seconds(roundMs)}`;
     if (tried.ok) {
       ctx.log(`  ${rule} round ${round} (${cost}): ${tried.accepted}`);
-      return { found: tried.found, answered, stoppedBy, elapsed };
+      return { found: tried.found, answered, stoppedBy, elapsed, rounds: asked, usd: spent };
     }
     ctx.log(`  ${rule} round ${round} (${cost}): rejected, ${firstLine(tried.why)}`);
     history.push({ body: tried.shown || answer, why: tried.why });
   }
-  return { found: null, answered, stoppedBy, elapsed };
+  return { found: null, answered, stoppedBy, elapsed, rounds: asked, usd: spent };
 }
 
 /** Lean's verdict on one assembled file, as a reason for rejection or null. */
@@ -131,6 +137,7 @@ export async function prover(
   rules: Rule[],
 ): Promise<ProverResult> {
   const proofs: Proof[] = [];
+  const attempts: ProofAttempt[] = [];
   let answered = false;
 
   for (const property of f.properties) {
@@ -157,17 +164,20 @@ export async function prover(
     if (result.answered) answered = true;
     if (result.found !== null) proofs.push({ rule: property.rule, body: result.found });
     else ctx.log(`  ${property.rule}: no proof within the budget (stopped by ${result.stoppedBy}, ${seconds(result.elapsed)} used)`);
+    const ended = result.found !== null ? "a proof submitted to the Referee" : `no proof (stopped by ${result.stoppedBy})`;
+    attempts.push({ rule: property.rule, step: "proof", rounds: result.rounds, usd: result.usd, ms: result.elapsed, ended });
   }
-  return { proofs, answered };
+  return { proofs, answered, attempts };
 }
 
 // ---- After a Refinement: a proof of the restated Property, or a counterexample to it ----
 
 /** What the Prover found against a Refinement: a counterexample, a proof, or nothing within the budget. */
-export type Refutation =
+export type Refutation = (
   | { kind: "counterexample"; witnesses: string[]; body: string; path: string }
   | { kind: "proof"; body: string }
-  | { kind: "none"; stoppedBy: string };
+  | { kind: "none"; stoppedBy: string }
+) & { attempt: ProofAttempt };
 
 function refutationPrompt(refined: Formalization, property: Property, rule: Rule, finding: Finding, history: Attempt[]): string {
   const proof = fileUpToBody(refined.formalization, property);
@@ -218,7 +228,7 @@ export async function proveOrRefute(
   finding: Finding,
 ): Promise<Refutation> {
   const property = refined.properties[0]!;
-  const result = await rounds<Exclude<Refutation, { kind: "none" }>>(
+  const result = await rounds<{ kind: "counterexample"; witnesses: string[]; body: string; path: string } | { kind: "proof"; body: string }>(
     ctx,
     rule.id,
     (history) => refutationPrompt(refined, property, rule, finding, history),
@@ -248,9 +258,13 @@ export async function proveOrRefute(
         : { ok: true as const, found: { kind: "counterexample", witnesses, body, path }, accepted: "a counterexample; Lean confirms it -> submitted to the Referee", ms, valid: true };
     },
   );
-  if (result.found) return result.found;
+  const ended = result.found
+    ? `${result.found.kind === "proof" ? "a proof" : "a counterexample"} submitted to the Referee`
+    : `no proof and no counterexample (stopped by ${result.stoppedBy})`;
+  const attempt: ProofAttempt = { rule: rule.id, step: "after-refinement", rounds: result.rounds, usd: result.usd, ms: result.elapsed, ended };
+  if (result.found) return { ...result.found, attempt };
   ctx.log(`  ${rule.id}: no proof and no counterexample within the budget (stopped by ${result.stoppedBy}, ${seconds(result.elapsed)} used)`);
-  return { kind: "none", stoppedBy: result.stoppedBy };
+  return { kind: "none", stoppedBy: result.stoppedBy, attempt };
 }
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;

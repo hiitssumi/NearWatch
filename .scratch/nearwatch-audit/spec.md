@@ -125,7 +125,7 @@ Each module below has a small interface and hides the work behind it.
 - **Rules agent:** for each Rule, the plain-English text, a Rule check, and a Property. Separately, one Formalization of the contract. On a Refinement it receives the Finding and returns a new Formalization that splits only the call the Finding went through.
 - **Attacker:** Scenarios and Leads. Its inputs are the contract source, the Scout's map, the Rules, the list of sandbox actions it may use, and the bug-class list. Nothing else.
 - **Prover:** for each Property, a proof body, or nothing. After a Refinement, it may also return a counterexample (see "Conflicts and Refinement").
-- **Reporter:** a plain-English report built from the Referee's result. It adds no claims of its own.
+- **Reporter:** a plain-English report built from the Referee's result. It adds no claims of its own. It is one LLM call with a fixed prompt. The LLM words only a summary and one passage for each Rule, Finding and Conflict. Code writes everything that is a fact into the report around those passages: the verdicts, each Finding's call and observations and the command that re-runs its Scenario, each Conflict's outcome and counterexample, what a proof covers, the Leads (apart from the Findings), the Audit's cost by agent and the cost of each proof attempt. Its answer is rejected, and retried like any invalid answer, if it names a Rule, Finding or Conflict that does not exist, leaves one out, or uses a verdict word other than that Rule's own. With no valid answer, the Audit completes without a report and the Reporter's share returns to the payer. The report is written to the Audit's folder as `report.md`, and the transcript says where.
 
 ### Scenarios are data, not code
 

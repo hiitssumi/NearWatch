@@ -162,7 +162,23 @@ export interface AuditResult {
   proofs: ProofCheck[];
   /** Every Conflict, at most one per Rule, with the Refinements it went through. */
   conflicts: Conflict[];
+  /** What each proof attempt cost: one per Property, plus the Prover's turn after a Refinement. */
+  proofAttempts: ProofAttempt[];
+  /** The Reporter's report, or null when there is none (it gave no valid answer, or it was not run). */
+  report: string | null;
   transcript: string[];
+}
+
+/** One run of the Prover's rounds on one Property, and what it cost. */
+export interface ProofAttempt {
+  rule: string;
+  /** "proof": against the first Formalization. "after-refinement": the restated Property, after a Refinement. */
+  step: "proof" | "after-refinement";
+  rounds: number;
+  usd: number;
+  ms: number;
+  /** What the rounds ended with, in a few words. */
+  ended: string;
 }
 
 // ---- Conflicts and Refinements ----
