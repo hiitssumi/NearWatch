@@ -260,3 +260,26 @@ test("with no testnet account in settings, the Audit runs with the fake payer an
   assert.equal(recorded.fee, undefined);
   assert.deepEqual(recorded.payouts, []);
 });
+
+// ---- The live testnet run (ticket 10) ----
+
+test("the testnet Recording replays: the Fee and nine Payouts with their real transaction hashes, and nothing is sent", async () => {
+  const r = await loadRecording(new URL("../recordings/live-testnet-buggy-vault.json", import.meta.url).pathname);
+  // The agents' answers are ticket 16's run, replayed; the payments were real transfers on NEAR testnet.
+  assert.equal((r.settings.continuedFrom as { recording: string; liveExchanges: number }).recording, "recordings/live-report-buggy-vault.json");
+  assert.equal((r.settings.continuedFrom as { liveExchanges: number }).liveExchanges, 0);
+  assert.equal(r.settings.payer, "testnet payer (real transfers: the Fee from payer.nearwatch-demo.testnet to nearwatch-demo.testnet, Payouts from nearwatch-demo.testnet)");
+  assert.deepEqual(r.fee, { yoctoNear: "1000000000000000000000000", hash: "DgSGKktqsjo6LDmd5ChwTXewyZM11Efv4E1fv3uUG8z8" });
+  assert.equal(r.payouts.length, 9);
+  assert.ok(r.payouts.every((p) => "hash" in p && /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(p.hash)));
+  assert.ok(!/ed25519:[1-9A-HJ-NP-Za-km-z]{80,}/.test(JSON.stringify(r)), "no secret key in the Recording");
+
+  const result = await runAudit(r.contract.path, replayPorts(r), auditOptionsFrom(r.settings));
+  const t = result.transcript;
+  assert.equal(t[2], "Fee: 1 NEAR, moved from the payer's account to the parent account [DgSGKktqsjo6LDmd5ChwTXewyZM11Efv4E1fv3uUG8z8]");
+  assert.ok(t.includes("  attacker: 0.12 NEAR (R3 Broken) [CQN883WAhofU4RjNQqwhgZkHG7hWaHBPVtaMgtedvw4n]"), "R3's share went to the Attacker");
+  assert.ok(t.includes("  Payout: the Prover's claim on R3's share is cancelled and passes to the Attacker. A Finding outranks a proof."));
+  assert.ok(t.includes("  Look up any hash at https://testnet.nearblocks.io/txns/<hash>"));
+  assert.deepEqual(result.payouts.map((p) => p.hash), r.payouts.map((p) => ("hash" in p ? p.hash : null)));
+  assert.equal(result.payouts.reduce((s, p) => s + BigInt(p.yoctoNear), 0n), 10n ** 24n, "the Payouts are the Fee exactly");
+});
