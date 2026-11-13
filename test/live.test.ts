@@ -184,6 +184,24 @@ test("request extras from settings are sent only to their own model, and cannot 
   assert.deepEqual(parseSettings(rawSettings()).requestExtras, {});
 });
 
+test("request extras keyed by an agent apply to that agent only, on top of its model's", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const fakeFetch: FetchFn = async (_url, init) => {
+    bodies.push(JSON.parse(init.body as string));
+    return reply('{"ok":true}');
+  };
+  // The Rules agent and the Scout both use "glm"; only the Rules agent's reasoning is kept low.
+  const extras = { glm: { top_p: 0.9, reasoning_effort: "high" }, rules: { reasoning_effort: "low" } };
+  const gw = new LiveGateway(settings({ requestExtras: extras }), { fetch: fakeFetch });
+  await gw.ask("rules", "hello");
+  await gw.ask("scout", "hello");
+  await gw.askModel("glm", "hello");
+  assert.deepEqual([bodies[0]!.reasoning_effort, bodies[0]!.top_p], ["low", 0.9]);
+  assert.deepEqual([bodies[1]!.reasoning_effort, bodies[1]!.top_p], ["high", 0.9]);
+  assert.equal(bodies[2]!.reasoning_effort, "high", "a call to the model alone gets only the model's extras");
+  assert.throws(() => parseSettings({ ...rawSettings(), requestExtras: { rules: { messages: [] } } }), /"requestExtras.rules" may not set "messages"/);
+});
+
 test("the live gateway retries a rate limit and reports other HTTP errors clearly", async () => {
   let n = 0;
   const flaky: FetchFn = async () => (n++ === 0 ? new Response("slow down", { status: 429 }) : reply("{}"));

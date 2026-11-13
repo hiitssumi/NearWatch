@@ -39,13 +39,16 @@ export class LiveGateway implements LlmGateway {
     return this.askModel(this.settings.models[agent], prompt, agent);
   }
 
-  /** Calls one model directly. Used by `ask` and by the model check. */
-  async askModel(model: string, prompt: string, label: string = model): Promise<LlmAnswer> {
+  /** Calls one model directly, with that agent's extras when an agent is named. Used by `ask` and by the model check. */
+  async askModel(model: string, prompt: string, agent?: AgentName): Promise<LlmAnswer> {
+    const label = agent ?? model;
     const price = this.settings.prices[model];
     if (!price) throw new LlmCallError(`No price for model "${model}" in settings; refusing to call it.`);
 
     const body = JSON.stringify({
       ...this.settings.requestExtras?.[model],
+      // An agent's own extras apply on top of its model's.
+      ...(agent ? this.settings.requestExtras?.[agent] : undefined),
       model,
       stream: true,
       stream_options: { include_usage: true },

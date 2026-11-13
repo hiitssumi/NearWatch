@@ -17,3 +17,11 @@ Needs from the builder: to read the Recording and approve it before it ships.
 - [ ] In replay the Referee and the Payout calculation run for real on the recorded evidence.
 - [ ] Fast test: the shipped Recording ends with Rule 1 Broken, Rule 2 Proven, one Conflict, one Refinement, and Rule 1's share paid to the Attacker.
 - [ ] From a fresh clone on a machine with only Node, installing and replaying works with no keys and no network. This has been tried on a clean checkout.
+
+## Comments
+
+14 Nov 2026, before this ticket: tried lowering the Rules agent's reasoning to cut the cost of the demo run. Decided with the builder to keep **full reasoning** for the demo Recording.
+- On NEAR AI, GLM-5.3 ignores `thinking: {type: "disabled"}`, and `chat_template_kwargs.enable_thinking: false` moves its reasoning into the answer text. Only `reasoning_effort: "low"` works (about 6 reasoning tokens, a normal answer).
+- `requestExtras` can now be keyed by agent name as well as model id, so the Rules agent can be set alone (it shares GLM with the Scout, Referee and Reporter).
+- One live Audit of the buggy vault with `"rules": {"reasoning_effort": "low"}` (`audits/rules-low-1`, not shipped): the Rules agent cost $0.16 and 2.4 minutes, against $1.54 and 35 minutes in ticket 08, and the whole Audit $0.73 against $1.70. But the Formalization compiled only on its third and last attempt, and the withdraw Property was false against it: the model subtracts the amount from the vault's NEAR with nothing saying the vault holds at least the recorded balances (Lean confirms a counterexample with a vault of 0). The Prover spent its 12 rounds on a Property with no proof, so there was a Finding and no Conflict.
+- One run only. Low reasoning is still useful for cheap rehearsals of everything except the Conflict.
