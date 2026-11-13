@@ -5,8 +5,8 @@ import { proveOrRefute, prover } from "./agents/prover.ts";
 import { renderReport, type ReportFacts, reporter } from "./agents/reporter.ts";
 import type { AgentName, AuditResult, Conflict, Counterexample, Finding, Lead, Proof, ProofAttempt, Refinement, Rule, SandboxSetup, TokenUse } from "./domain.ts";
 import { negatedProperty, theoremName } from "./lean.ts";
-import { formatNear, ledger } from "./ledger.ts";
-import type { AuditPorts } from "./ports.ts";
+import { FEE_YOCTO, formatNear, ledger } from "./ledger.ts";
+import { type AuditPorts, PaymentError } from "./ports.ts";
 import { checkCounterexample, comparePaths, type DetectedConflict, explainConflict, recheckProof, referee } from "./referee.ts";
 import { VAULT_SETUP } from "./sandbox.ts";
 import { DEFAULT_SPEND_CAP_USD } from "./settings.ts";
@@ -83,6 +83,19 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
 
   log(`NearWatch Audit of ${contractPath}`);
   log(`Payer: ${ports.payer.describe}`);
+  // The Fee is fixed and collected before any agent runs. If it cannot be collected, nothing is spent.
+  const fee = { yoctoNear: FEE_YOCTO.toString(), hash: "" };
+  try {
+    fee.hash = (await ports.payer.collectFee(fee.yoctoNear)).hash;
+  } catch (e) {
+    if (!(e instanceof PaymentError)) throw e;
+    throw new PaymentError(`The Fee could not be collected, so no agent was run and nothing was spent. ${e.message}`);
+  }
+  log(
+    ports.payer.simulated
+      ? `Fee: ${formatNear(fee.yoctoNear)} (simulated: the fake payer moves nothing) [${fee.hash}]`
+      : `Fee: ${formatNear(fee.yoctoNear)}, moved from the payer's account to the parent account [${fee.hash}]`,
+  );
   const source = await ports.source.read(contractPath);
 
   log("");
@@ -118,6 +131,7 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
       findings: [],
       leads: [],
       tokens,
+      fee,
       payouts: [],
       formalization: null,
       properties: [],
@@ -237,10 +251,24 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   if (ports.payer.simulated) log("  SIMULATED: the fake payer records these Payouts and sends nothing on chain.");
   const payouts: AuditResult["payouts"] = [];
   for (const p of ledger({ verdicts: result.verdicts, ran })) {
-    const { hash } = await ports.payer.send({ agent: p.to, yoctoNear: p.yoctoNear });
-    payouts.push({ ...p, hash });
-    log(`  ${p.to}: ${formatNear(p.yoctoNear)} (${p.reason}) [${hash}]`);
+    try {
+      const { hash } = await ports.payer.send({ agent: p.to, yoctoNear: p.yoctoNear });
+      payouts.push({ ...p, hash });
+      log(`  ${p.to}: ${formatNear(p.yoctoNear)} (${p.reason}) [${hash}]`);
+    } catch (e) {
+      // A transfer that fails must not lose the Audit: the Payout is listed as not paid and the rest go on.
+      if (!(e instanceof PaymentError)) throw e;
+      payouts.push({ ...p, hash: null, error: e.message });
+      log(`  NOT PAID ${p.to}: ${formatNear(p.yoctoNear)} (${p.reason}): ${e.message}`);
+    }
   }
+  const unpaid = payouts.filter((p) => p.hash === null);
+  if (unpaid.length > 0) {
+    const total = unpaid.reduce((sum, p) => sum + BigInt(p.yoctoNear), 0n);
+    log(`  ** ${unpaid.length} Payout${unpaid.length === 1 ? " was" : "s were"} not paid, ${formatNear(total.toString())} in all: ${unpaid.map((p) => `${p.to} ${formatNear(p.yoctoNear)}`).join(", ")}. **`);
+    log("  That money is still in the parent account. The verdicts and the Audit's results are saved.");
+  }
+  if (ports.payer.explorer) log(`  Look up any hash at ${ports.payer.explorer}<hash>`);
 
   return {
     contractPath,
@@ -250,6 +278,7 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     findings: result.findings,
     leads,
     tokens,
+    fee,
     payouts,
     formalization: formal?.formalization ?? null,
     properties: formal?.properties ?? [],

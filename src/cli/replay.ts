@@ -10,7 +10,9 @@ const path = positionals[0] ?? DEFAULT_RECORDING;
 
 try {
   const recording = await loadRecording(path);
-  console.log(`Replaying ${path} (commit ${recording.commit})\n`);
+  console.log(`Replaying ${path} (commit ${recording.commit})`);
+  if (recording.fee) console.log("This Audit paid on NEAR testnet. Replay prints the recorded transaction hashes and sends nothing.");
+  console.log("");
   const result = await runAudit(recording.contract.path, replayPorts(recording), auditOptionsFrom(recording.settings));
   console.log(result.transcript.join("\n"));
 } catch (e) {

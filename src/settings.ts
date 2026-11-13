@@ -23,13 +23,21 @@ export interface Settings {
   prices: Record<string, Price>;
   spendCapUsd: number;
   /**
-   * Extra request fields per model id, merged into the chat completions body. Used to turn off the
-   * Attacker model's thinking, which otherwise runs past the call timeout on an Attacker round.
+   * Extra request fields merged into the chat completions body, keyed by model id or by agent name. An
+   * agent's own extras apply on top of its model's. Used to turn off the Attacker model's thinking, which
+   * otherwise runs past the call timeout on an Attacker round. An agent key such as "rules" with
+   * {"reasoning_effort": "low"} makes cheap rehearsal runs (GLM-5.3 on NEAR AI honours `reasoning_effort`,
+   * not `thinking`), but the Rules agent then wrote a false Property, so it is off by default.
    */
   requestExtras: Record<string, Record<string, unknown>>;
-  /** Testnet accounts (ticket 10). Optional until then. */
+  /**
+   * The builder's testnet parent account and its secret key ("ed25519:..."), for real Payouts. With neither,
+   * an Audit runs with the fake payer. The key is used only to sign: it is never printed, stored or committed.
+   */
   parentAccount?: string;
   parentKey?: string;
+  /** The testnet RPC to send payments through. Defaults to a public one. */
+  testnetRpc?: string;
 }
 
 export class SettingsError extends Error {}
@@ -75,7 +83,7 @@ export function parseSettings(raw: unknown, source = SETTINGS_FILE): Settings {
   if (!nonNeg(spendCapUsd)) bad('"spendCapUsd" must be a number of dollars, 0 or more');
 
   const extrasRaw = raw.requestExtras ?? {};
-  if (!isObj(extrasRaw)) bad('"requestExtras" must map model ids to objects of extra request fields');
+  if (!isObj(extrasRaw)) bad('"requestExtras" must map model ids or agent names to objects of extra request fields');
   const requestExtras: Record<string, Record<string, unknown>> = {};
   for (const [model, extra] of Object.entries(extrasRaw as Record<string, unknown>)) {
     if (!isObj(extra)) bad(`"requestExtras.${model}" must be an object`);
@@ -83,7 +91,7 @@ export function parseSettings(raw: unknown, source = SETTINGS_FILE): Settings {
     requestExtras[model] = extra as Record<string, unknown>;
   }
 
-  const opt = (k: "parentAccount" | "parentKey") => {
+  const opt = (k: "parentAccount" | "parentKey" | "testnetRpc") => {
     const v = raw[k];
     if (v === undefined || v === "") return undefined;
     if (typeof v !== "string") bad(`"${k}" must be a string`);
@@ -99,6 +107,7 @@ export function parseSettings(raw: unknown, source = SETTINGS_FILE): Settings {
     requestExtras,
     parentAccount: opt("parentAccount"),
     parentKey: opt("parentKey"),
+    testnetRpc: opt("testnetRpc"),
   };
 }
 

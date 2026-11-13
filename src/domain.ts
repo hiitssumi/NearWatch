@@ -153,8 +153,10 @@ export interface AuditResult {
   findings: Finding[];
   leads: Lead[];
   tokens: Record<string, TokenUse>;
-  /** Each Payout with the hash the payer returned for it. */
-  payouts: (Payout & { hash: string })[];
+  /** The Fee's transfer from the payer to the parent, made before any agent ran. */
+  fee: { yoctoNear: string; hash: string };
+  /** Each Payout with the hash the payer returned for it, or null and the reason when it could not be paid. */
+  payouts: (Payout & { hash: string | null; error?: string })[];
   /** The Rules agent's Formalization, or null if it wrote none that compiled. */
   formalization: string | null;
   properties: Property[];

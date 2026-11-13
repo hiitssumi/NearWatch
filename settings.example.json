@@ -33,5 +33,6 @@
   },
   "spendCapUsd": 5,
   "parentAccount": "",
-  "parentKey": ""
+  "parentKey": "",
+  "testnetRpc": ""
 }

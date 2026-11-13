@@ -27,10 +27,18 @@ export interface PayoutOrder {
   yoctoNear: string;
 }
 
+/** A payment that could not be made. The message says why; the Audit goes on and lists what was not paid. */
+export class PaymentError extends Error {}
+
 export interface Payer {
   readonly describe: string;
   /** True when nothing is really sent (the fake payer). */
   readonly simulated?: boolean;
+  /** Where a transaction hash can be looked up: a URL that the hash is added to. */
+  readonly explorer?: string;
+  /** Moves the Fee from the payer's account to the parent's, before any agent runs. */
+  collectFee(yoctoNear: string): Promise<{ hash: string }>;
+  /** Pays one Payout from the parent's account. Throws a PaymentError when it cannot be paid. */
   send(order: PayoutOrder): Promise<{ hash: string }>;
 }
 

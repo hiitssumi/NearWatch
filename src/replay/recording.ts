@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { AgentName, LeanOutcome, Property, ScenarioOutcome, TokenUse } from "../domain.ts";
-import type { AuditPorts, LlmAnswer, LlmGateway, Payer, PayoutOrder, Toolchain } from "../ports.ts";
+import { type AuditPorts, type LlmAnswer, type LlmGateway, type Payer, PaymentError, type PayoutOrder, type Toolchain } from "../ports.ts";
 import { scenarioOutcome } from "../schemas.ts";
 import { amount, anyObject, array, bool, type Check, object, oneOf, str } from "../validate.ts";
 
@@ -17,8 +17,13 @@ export interface Recording {
   exchanges: { agent: AgentName; answer: string; tokens: TokenUse; model?: string; prompt?: string; usd?: number; ms?: number }[];
   /** Every toolchain outcome, in order. */
   toolchain: ToolchainEntry[];
-  payouts: { agent: string; yoctoNear: string; hash: string }[];
+  /** The Fee's transfer, when the Audit paid for real. Absent for Audits run with the fake payer. */
+  fee?: { yoctoNear: string; hash: string };
+  /** Every Payout sent for real, in order: its transaction hash, or why it could not be paid. Empty with the fake payer. */
+  payouts: PayoutEntry[];
 }
+
+export type PayoutEntry = { agent: string; yoctoNear: string; hash: string } | { agent: string; yoctoNear: string; error: string };
 
 export type ToolchainEntry =
   | { op: "runScenario"; scenario: string; outcome: ScenarioOutcome }
@@ -76,10 +81,16 @@ const recordingCheck: Check<Recording> = (v, p) => {
       }),
     ),
     toolchain: array(toolchainEntry),
-    payouts: array(object({ agent: str, yoctoNear: amount, hash: str })),
+    fee: optional(object({ yoctoNear: amount, hash: str })),
+    payouts: array((x, q): PayoutEntry =>
+      (x as { error?: unknown })?.error !== undefined
+        ? object({ agent: str, yoctoNear: amount, error: str })(x, q)
+        : object({ agent: str, yoctoNear: amount, hash: str })(x, q),
+    ),
   })(v, p);
   if ((v as { format?: unknown }).format !== 1) throw new Error("Recording: unsupported format (expected 1)");
-  return { format: 1, ...r };
+  const { fee, ...rest } = r;
+  return fee === undefined ? { format: 1, ...rest } : { format: 1, ...rest, fee };
 };
 
 export async function loadRecording(path: string): Promise<Recording> {
@@ -176,13 +187,49 @@ export class FakePayer implements Payer {
   readonly describe = "fake payer (records Payouts, sends nothing)";
   readonly simulated = true;
   readonly sent: PayoutOrder[] = [];
+  async collectFee(_yoctoNear: string): Promise<{ hash: string }> {
+    return { hash: "fake-fee" };
+  }
   async send(order: PayoutOrder): Promise<{ hash: string }> {
     this.sent.push(order);
     return { hash: `fake-${this.sent.length}` };
   }
 }
 
-export function replayPorts(recording: Recording, payer: Payer = new FakePayer()): AuditPorts {
+/**
+ * Returns the transaction hashes a live Audit recorded, in order, and sends nothing. A Payout that could not be
+ * paid in the live Audit fails the same way here. Fails clearly when asked for a payment that was not recorded.
+ */
+export class ReplayPayer implements Payer {
+  readonly describe: string;
+  readonly explorer?: string;
+  private readonly fee: Recording["fee"];
+  private readonly payouts: PayoutEntry[];
+  private next = 0;
+  constructor(recording: Pick<Recording, "fee" | "payouts" | "settings">) {
+    this.describe = typeof recording.settings.payer === "string" ? recording.settings.payer : "replayed payer";
+    if (typeof recording.settings.payerExplorer === "string") this.explorer = recording.settings.payerExplorer;
+    this.fee = recording.fee;
+    this.payouts = recording.payouts;
+  }
+  async collectFee(yoctoNear: string): Promise<{ hash: string }> {
+    if (!this.fee || this.fee.yoctoNear !== yoctoNear) throw new ReplayError(`Replay asked for a Fee of ${yoctoNear} yoctoNEAR, but the Recording holds ${this.fee ? this.fee.yoctoNear : "none"}.`);
+    return { hash: this.fee.hash };
+  }
+  async send(order: PayoutOrder): Promise<{ hash: string }> {
+    const stored = this.payouts[this.next];
+    if (!stored || stored.agent !== order.agent || stored.yoctoNear !== order.yoctoNear) {
+      const there = stored ? `${stored.yoctoNear} to ${stored.agent}` : "none";
+      throw new ReplayError(`Replay asked for Payout #${this.next + 1} (${order.yoctoNear} yoctoNEAR to ${order.agent}), but the Recording holds ${there} there.`);
+    }
+    this.next++;
+    if ("error" in stored) throw new PaymentError(stored.error);
+    return { hash: stored.hash };
+  }
+}
+
+/** The ports to replay a Recording: its stored hashes when it paid for real, otherwise the fake payer it was made with. */
+export function replayPorts(recording: Recording, payer: Payer = recording.fee ? new ReplayPayer(recording) : new FakePayer()): AuditPorts {
   return {
     llm: new ReplayGateway(recording.exchanges),
     toolchain: new ReplayToolchain(recording.toolchain),

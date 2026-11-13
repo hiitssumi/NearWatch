@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import type { AgentName, LeanOutcome, Property, RuleCheck, Scenario, ScenarioOutcome } from "../domain.ts";
-import type { LlmAnswer, LlmGateway, Toolchain } from "../ports.ts";
+import { type LlmAnswer, type LlmGateway, type Payer, PaymentError, type PayoutOrder, type Toolchain } from "../ports.ts";
 import type { Recording } from "../replay/recording.ts";
 
 export class RecordingGateway implements LlmGateway {
@@ -25,8 +25,49 @@ export class RecordingGateway implements LlmGateway {
     settings: Record<string, unknown>;
     contract: Recording["contract"];
     toolchain?: Recording["toolchain"];
+    /** What a real payer sent. Left out for the fake payer, whose Payouts are not stored. */
+    payments?: { fee?: Recording["fee"]; payouts: Recording["payouts"] };
   }): Recording {
-    return { format: 1, ...parts, exchanges: this.exchanges, toolchain: parts.toolchain ?? [], payouts: [] };
+    const { payments, ...rest } = parts;
+    return {
+      format: 1,
+      ...rest,
+      exchanges: this.exchanges,
+      toolchain: parts.toolchain ?? [],
+      ...(payments?.fee ? { fee: payments.fee } : {}),
+      payouts: payments?.payouts ?? [],
+    };
+  }
+}
+
+/** Wraps a payer and stores the Fee's hash and every Payout's hash, or the reason it could not be paid, in order. */
+export class RecordingPayer implements Payer {
+  readonly describe: string;
+  readonly simulated?: boolean;
+  readonly explorer?: string;
+  fee?: Recording["fee"];
+  readonly payouts: Recording["payouts"] = [];
+  private readonly inner: Payer;
+  constructor(inner: Payer) {
+    this.inner = inner;
+    this.describe = inner.describe;
+    if (inner.simulated) this.simulated = true;
+    if (inner.explorer) this.explorer = inner.explorer;
+  }
+  async collectFee(yoctoNear: string): Promise<{ hash: string }> {
+    const sent = await this.inner.collectFee(yoctoNear);
+    this.fee = { yoctoNear, hash: sent.hash };
+    return sent;
+  }
+  async send(order: PayoutOrder): Promise<{ hash: string }> {
+    try {
+      const sent = await this.inner.send(order);
+      this.payouts.push({ agent: order.agent, yoctoNear: order.yoctoNear, hash: sent.hash });
+      return sent;
+    } catch (e) {
+      if (e instanceof PaymentError) this.payouts.push({ agent: order.agent, yoctoNear: order.yoctoNear, error: e.message });
+      throw e;
+    }
   }
 }
 

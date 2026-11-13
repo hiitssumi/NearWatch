@@ -10,8 +10,9 @@ import { readContract } from "./contract.ts";
 import type { AuditResult, Rule, Scenario } from "./domain.ts";
 import { assembleLeanFile, LocalLean, negatedProperty, theoremName } from "./lean.ts";
 import { LiveGateway } from "./llm/live.ts";
-import { currentCommit, RecordingGateway, RecordingToolchain } from "./llm/recording.ts";
-import type { LlmGateway, Toolchain } from "./ports.ts";
+import { currentCommit, RecordingGateway, RecordingPayer, RecordingToolchain } from "./llm/recording.ts";
+import { testnetPayer } from "./near/payments.ts";
+import type { LlmGateway, Payer, Toolchain } from "./ports.ts";
 import { ReplayThenLive, ReplayThenLiveToolchain } from "./replay/continue.ts";
 import { FakePayer, loadRecording } from "./replay/recording.ts";
 import { LocalSandbox, VAULT_SETUP } from "./sandbox.ts";
@@ -43,6 +44,8 @@ export interface LiveAuditRequest {
   llm?: (settings: Settings) => LlmGateway;
   /** Replaces the local sandbox (tests). */
   toolchain?: Toolchain;
+  /** Replaces the payer chosen from settings (tests). */
+  payer?: Payer;
   /** Called with each transcript line as it happens (the command prints them). */
   onLine?: (line: string) => void;
   /**
@@ -87,15 +90,20 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
   const progressPath = join(req.outDir, "progress.txt");
   await writeFile(progressPath, "");
   const recordingPath = join(req.outDir, "recording.json");
+  // Real testnet transfers when settings name a parent account and key; otherwise the fake payer.
+  const payer = new RecordingPayer(req.payer ?? testnetPayer(settings) ?? new FakePayer());
+  const paid = () => (payer.simulated ? {} : { payer: payer.describe, ...(payer.explorer ? { payerExplorer: payer.explorer } : {}) });
   const saveRecording = () =>
     writeFile(
       recordingPath,
       `${JSON.stringify(
         llm.toRecording({
           commit: currentCommit(),
-          settings: { ...publicSettings(settings), ...options, ...continuation() },
+          settings: { ...publicSettings(settings), ...options, ...continuation(), ...paid() },
           contract: { path: req.contractPath, source },
           toolchain: toolchain.entries,
+          // The fake payer's Payouts are not stored: a replay works them out again and sends nothing.
+          ...(payer.simulated ? {} : { payments: { fee: payer.fee, payouts: payer.payouts } }),
         }),
         null,
         2,
@@ -106,7 +114,7 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
   try {
     result = await runAudit(
       req.contractPath,
-      { llm, toolchain, payer: new FakePayer(), source: { read: async () => source } },
+      { llm, toolchain, payer, source: { read: async () => source } },
       {
         ...options,
         // Each line is appended to progress.txt as it happens, so a long Audit can be watched.
@@ -120,6 +128,7 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
     // Saved even when the Audit fails part-way, so the money spent is not lost.
     await saveRecording();
   }
+  await writeFile(join(req.outDir, "payouts.json"), `${JSON.stringify({ payer: payer.describe, fee: result.fee, payouts: result.payouts }, null, 2)}\n`);
   if (result.report !== null) await writeFile(join(req.outDir, "report.md"), result.report);
   await writeFile(join(req.outDir, "scout-map.json"), `${JSON.stringify(result.scoutMap, null, 2)}\n`);
   await writeFile(join(req.outDir, "rules.json"), `${JSON.stringify(result.rules, null, 2)}\n`);

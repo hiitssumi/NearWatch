@@ -115,7 +115,7 @@ Each module below has a small interface and hides the work behind it.
 - **Agents.** Scout, Rules agent, Attacker, Prover and Reporter are each a function from typed inputs to typed outputs that uses the LLM gateway and, for the Attacker and Prover, the toolchain. Every agent's answer is requested as structured data and validated. An invalid answer is retried up to twice, then treated as that agent producing nothing.
 - **Referee.** Ordinary code with no LLM in its decisions. Given the Rules, the submitted Scenarios and the submitted proofs, it re-runs each through the toolchain, detects Conflicts, and sets verdicts. It uses the LLM gateway only to word the explanation of a Conflict and to compare a counterexample's path with the Finding's; neither decides anything.
 - **Ledger.** A pure calculation from verdicts to Payouts.
-- **Payer.** Sends Payouts. Three implementations: testnet transfers, a fake that records what it would send, and replay (returns stored transaction hashes).
+- **Payer.** Two operations: collect the Fee, and send one Payout. Three implementations: testnet transfers, a fake that records what it would send, and replay (returns stored transaction hashes).
 - **Sandbox harness.** A fixed Rust program built on near-workspaces 0.24. It deploys a compiled contract to a local sandbox, runs a Scenario, collects observations and reports them. It is compiled once, not once per Scenario.
 - **Vaults.** The buggy demo vault and its fixed copy.
 
@@ -185,6 +185,11 @@ Each module below has a small interface and hides the work behind it.
 - A share for an agent that did not run is returned to the payer.
 - Accounts: one sub-account per agent and one for the payer, all under the builder's parent account. The Fee moves from the payer to the parent at the start, Payouts move from the parent to the agents at the end, and anything left returns to the payer. All are plain transfers. No payment contract is written.
 - With no testnet account configured, the Audit runs with the fake payer and says so in the transcript.
+- Sub-accounts are named `<agent>.<parent>` and `payer.<parent>`. The setup command creates each with the parent's key as its full-access key, so the one key in settings signs for the parent and for the payer; agents' accounts only receive. It gives an agent's account 0.01 NEAR to exist and brings the payer's account up to 1.5 NEAR, topping it up when it falls below 1.1 NEAR. Running it again leaves what exists alone.
+- Transactions are serialized and signed in this program with Node's own ed25519, and sent over NEAR JSON-RPC: no NEAR package is a dependency. Queries read the latest block, not the last final one, and the last nonce used per signer is remembered, so two payments in a row never reuse a nonce.
+- The Fee is collected before any agent runs. If it cannot be collected (no payer account, or too little in it), no agent runs, nothing is spent, and the message says what to do.
+- Each payment's transaction hash is printed in the transcript, with the address to look one up on a testnet explorer. A Payout that fails is listed as not paid with the chain's reason, the other Payouts are still sent, a summary line gives what was not paid, and the verdicts, the Audit's folder and the Recording are saved as usual. Unpaid money stays in the parent account.
+- Payments are sent on testnet only. Settings that name a parent account not ending in `.testnet` make no payer at all, and before its first transaction the payer asks the RPC node which network it is on and refuses anything other than testnet. The parent's key is used only to sign: it is never printed, never put in an error, and never stored in a Recording or the Audit's folder.
 
 ### The demo vault
 
@@ -197,7 +202,7 @@ Each module below has a small interface and hides the work behind it.
 
 ### Recording and replay
 
-- A Recording holds, in order: every LLM exchange with its agent and token use, every toolchain outcome, every Payout hash, the settings used, and the commit it was made from.
+- A Recording holds, in order: every LLM exchange with its agent and token use, every toolchain outcome, every Payout hash, the settings used, and the commit it was made from. For an Audit that paid for real it holds the Fee's hash and, for each Payout, its hash or the reason it was not paid. The replay payer returns these in order, fails clearly if the Ledger asks for a Payout the Recording does not hold there, and sends nothing. A Recording made with the fake payer stores no payments and replays with the fake payer.
 - Plain replay feeds the Recording through the same Audit runner with the replay gateway, replay toolchain and replay payer. The Referee and the Ledger run for real on the recorded evidence.
 - Replay hands each agent its own exchanges in order, and Scenario runs and Lean checks each in their own order. The Attacker runs only Scenarios and the Prover's side only Lean checks, so the part that runs side by side replays exactly, however its calls interleaved in the live run.
 - A live Audit may continue an earlier Recording of the same contract source: the earlier answers and outcomes are replayed in the same per-agent and per-kind orders, and only what the Recording does not hold goes to the live model and toolchain. This runs a step added after a Recording was made without paying for the whole Audit again. The new Recording holds everything, replays on its own, and states what it continued from and how many exchanges and outcomes were replayed and how many were live.
