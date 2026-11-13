@@ -61,6 +61,35 @@
       "axioms": [
         "sorryAx"
       ]
+    },
+    "restated-statement": {
+      "ok": true,
+      "errors": "",
+      "axioms": [
+        "sorryAx"
+      ]
+    },
+    "after-restated": {
+      "ok": false,
+      "errors": "property_R1.lean:63:2: error: Invalid alternative name `deposit`: Expected `ofByteArray`\nproperty_R1.lean:69:2: error: Invalid alternative name `withdraw`: Expected `ofByteArray`\nproperty_R1.lean:75:2: error: Invalid alternative name `setPaused`: Expected `ofByteArray`\nproperty_R1.lean:62:2: error: Alternative `ofByteArray` has not been provided\n'property_R1' depends on axioms: [sorryAx]",
+      "axioms": [
+        "sorryAx"
+      ]
+    },
+    "counterexample-R1": {
+      "ok": true,
+      "errors": "",
+      "axioms": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "success-branch": {
+      "ok": false,
+      "errors": "property_R1_counterexample.lean:60:82: error: unsolved goals\nh :\n  ∀ (s : State) (c r : Account) (amt : Nat) (ok : Bool),\n    s.pending = [] →\n      s.balance c + s.received c ≤\n        (step (step s (Call.withdrawStart c r amt)) (Call.withdrawResolve ok)).balance c +\n          (step (step s (Call.withdrawStart c r amt)) (Call.withdrawResolve ok)).received c\nhw : 1 ≤ bump (fun x => 0) \"alice\" 1 \"alice\"\n⊢ False\n'property_R1_counterexample' depends on axioms: [sorryAx]",
+      "axioms": [
+        "sorryAx"
+      ]
     }
   }
 }

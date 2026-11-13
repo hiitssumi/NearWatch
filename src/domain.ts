@@ -182,6 +182,29 @@ export interface Conflict {
    * allowed. unresolved: the Rules agent wrote no Refinement that compiles. The Rule is Broken in every case.
    */
   outcome: "resolved" | "withdrawn" | "unresolved";
+  /**
+   * After the Refinement that resolved the Conflict, what the Prover did with the restated Property:
+   * a counterexample, a proof, or nothing (absent when the step did not run). Neither changes the verdict.
+   */
+  afterRefinement?: { counterexample: Counterexample | null; proof: ProofCheck | null };
+}
+
+/** Concrete values, checked by Lean, for which a Property is false against a Formalization. */
+export interface Counterexample {
+  rule: string;
+  /** The Refinement it breaks the restated Property of (1 for the first). */
+  refinement: number;
+  /** Lean terms the Property is applied to, in order: values for its variables and proofs of its hypotheses. */
+  witnesses: string[];
+  /** The tactic block that derives False from the Property applied to the witnesses. */
+  body: string;
+  /** The Prover's own one-line account of the steps the counterexample runs. */
+  path: string;
+  /** The Referee's re-check with Lean. */
+  check: ProofCheck;
+  /** Whether it follows the same path as the Finding. Compared by an LLM; it decides nothing. Null if not compared. */
+  samePath: boolean | null;
+  comparison: string;
 }
 
 /** A Formalization that splits one call into a start step and a resolve step, written after a Conflict. */

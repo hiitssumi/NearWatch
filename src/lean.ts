@@ -38,6 +38,18 @@ ${body}
 `;
 }
 
+/** What a counterexample proves: the negation of the Property, under its own theorem name. */
+export const negatedProperty = (p: Property): Property => ({ rule: `${p.rule}_counterexample`, statement: `¬ (${p.statement.trim()})` });
+
+/**
+ * The proof body Lean checks for a counterexample: it applies the Property to the witnesses, in order, and
+ * leaves the Prover's tactics to derive False from that (`hw`). The witnesses are what make it concrete.
+ */
+export function counterexampleBody(witnesses: string[], tactics: string): string {
+  const args = witnesses.map((w) => `(${w.replace(/\s*\n\s*/g, " ").trim()})`).join(" ");
+  return `intro h\nhave hw := h ${args}\n${tactics.replace(/\s+$/, "")}`;
+}
+
 /** Reads the axiom list Lean printed for `name` just before `marker`; null if there is no such report. */
 export function readAxiomReport(output: string, name: string, marker: string): string[] | null {
   const end = output.lastIndexOf(marker);

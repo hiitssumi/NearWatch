@@ -50,6 +50,10 @@ _Avoid_: Disagreement, contradiction, mismatch
 A more detailed Formalization written in response to a Conflict, covering only the contract call the Finding went through. The first Formalization treats every call as one indivisible step.
 _Avoid_: Fix, revision, second model
 
+**Counterexample**:
+Concrete values for which Lean confirms that a Property is false against a Formalization. After a Refinement, it is the Prover's evidence of why a Rule is broken, set beside the Attacker's Finding.
+_Avoid_: Disproof, refutation, failing case
+
 ### Verdicts
 
 Every Rule ends an Audit with exactly one verdict. A Finding always outranks a proof.

@@ -128,6 +128,16 @@ export const conflictExplanation: Check<{ explanation: string }> = object({ expl
 /** The Prover's answer: a proof body only. */
 export const proverAnswer: Check<{ proof: string }> = object({ proof: str });
 
+/** After a Refinement, the Prover answers with a proof of the restated Property or a counterexample to it. */
+export type RefutationAnswer = { proof: string } | { counterexample: { witnesses: string[]; proof: string; path: string } };
+export const refutationAnswer: Check<RefutationAnswer> = variant<RefutationAnswer>({
+  proof: object({ proof: str }),
+  counterexample: object({ counterexample: object({ witnesses: array(str, { min: 1 }), proof: str, path: str }) }),
+});
+
+/** The Referee's comparison of a counterexample with the Finding, worded by an LLM. It decides nothing. */
+export const pathComparison: Check<{ samePath: boolean; why: string }> = object({ samePath: bool, why: str });
+
 const sandboxAction: Check<SandboxAction> = (v, p) => {
   const kind = oneOf("createAccount", "call", "view")((v as { action?: unknown })?.action, `${p}.action`);
   if (kind === "createAccount") return { action: kind, ...object({ account: str, balance: amount })(v, p) };

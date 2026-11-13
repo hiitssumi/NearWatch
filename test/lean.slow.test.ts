@@ -6,8 +6,8 @@ import { test } from "node:test";
 import type { LeanOutcome } from "../src/domain.ts";
 import { findLean, LocalLean } from "../src/lean.ts";
 import type { Toolchain } from "../src/ports.ts";
-import { referee } from "../src/referee.ts";
-import { CASES, type CaseName, FORMALIZATION, FORMALIZATION_WITH_AXIOM, PROPERTIES, property } from "./lean/cases.ts";
+import { checkCounterexample, referee } from "../src/referee.ts";
+import { CASES, type CaseName, FORMALIZATION, FORMALIZATION_WITH_AXIOM, PROPERTIES, caseProperty, COUNTEREXAMPLE_R1, property, R1_REFINED, REFINED, SUCCESS_BRANCH } from "./lean/cases.ts";
 
 const skip = findLean() ? false : "Lean is not installed (see test/lean.slow.test.ts)";
 
@@ -34,6 +34,21 @@ test("real Lean: the Referee accepts a complete proof of Rule 1 and Rule 1 ends 
   assert.deepEqual(result.verdicts, { R1: "Proven", R2: "Unproven" });
 });
 
+test("real Lean: the Referee confirms a counterexample to the restated Rule 1 on the failure branch, and rejects the same values on the success branch", { skip }, async () => {
+  const toolchain = realToolchain();
+  const holds = await checkCounterexample(toolchain, REFINED, R1_REFINED, COUNTEREXAMPLE_R1);
+  assert.equal(holds.accepted, true, holds.outcome?.errors);
+  assert.match(holds.reason, /^Lean confirms the Property is false for these values; axioms: propext, Quot.sound$/);
+  const success = await checkCounterexample(toolchain, REFINED, R1_REFINED, SUCCESS_BRANCH);
+  assert.equal(success.accepted, false);
+  assert.match(success.outcome!.errors, /unsolved goals/);
+  // A value that is not concrete is refused before Lean sees it.
+  const vague = await checkCounterexample(toolchain, REFINED, R1_REFINED, { ...COUNTEREXAMPLE_R1, witnesses: ["sorry"] });
+  assert.equal(vague.accepted, false);
+  assert.equal(vague.outcome, undefined);
+  assert.match(vague.reason, /^witness 1: it uses the placeholder `sorry`/);
+});
+
 test("real Lean: the Referee rejects a proof that relies on an added axiom", { skip }, async () => {
   const result = await referee("vault", rules, [], realToolchain(), () => {}, {
     formalization: FORMALIZATION_WITH_AXIOM,
@@ -51,7 +66,7 @@ test("real Lean: every stored outcome the fast tests replay still matches", { sk
   ).outcomes;
   const lean = new LocalLean();
   for (const [name, c] of Object.entries(CASES) as [CaseName, (typeof CASES)[CaseName]][]) {
-    const real = await lean.checkLean(c.formalization, property(c.rule), c.body);
+    const real = await lean.checkLean(c.formalization, caseProperty(c), c.body);
     assert.deepEqual(real, stored[name], `case ${name} (re-record with npm run record-lean if Lean changed)`);
   }
 });

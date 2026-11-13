@@ -113,7 +113,7 @@ Each module below has a small interface and hides the work behind it.
 - **LLM gateway.** One operation: given an agent name and a prompt, return an answer and its token use. Three implementations: live (NEAR AI Cloud, OpenAI-compatible), recording (wraps live and stores every exchange), and replay (returns stored answers in order and fails if asked something that was not recorded). It also prices each call from a table in settings.
 - **Toolchain.** Two operations: run a Scenario with a Rule check and return observations and a pass or fail; check a Lean file and return success or the error text plus the axioms used. Two implementations: real, and replay (returns stored outcomes).
 - **Agents.** Scout, Rules agent, Attacker, Prover and Reporter are each a function from typed inputs to typed outputs that uses the LLM gateway and, for the Attacker and Prover, the toolchain. Every agent's answer is requested as structured data and validated. An invalid answer is retried up to twice, then treated as that agent producing nothing.
-- **Referee.** Ordinary code with no LLM in its decisions. Given the Rules, the submitted Scenarios and the submitted proofs, it re-runs each through the toolchain, detects Conflicts, and sets verdicts. It uses the LLM gateway only to word the explanation of a Conflict.
+- **Referee.** Ordinary code with no LLM in its decisions. Given the Rules, the submitted Scenarios and the submitted proofs, it re-runs each through the toolchain, detects Conflicts, and sets verdicts. It uses the LLM gateway only to word the explanation of a Conflict and to compare a counterexample's path with the Finding's; neither decides anything.
 - **Ledger.** A pure calculation from verdicts to Payouts.
 - **Payer.** Sends Payouts. Three implementations: testnet transfers, a fake that records what it would send, and replay (returns stored transaction hashes).
 - **Sandbox harness.** A fixed Rust program built on near-workspaces 0.24. It deploys a compiled contract to a local sandbox, runs a Scenario, collects observations and reports them. It is compiled once, not once per Scenario.
@@ -160,10 +160,14 @@ Each module below has a small interface and hides the work behind it.
 
 - A Conflict exists when the Referee has reproduced a Finding against a Rule and has also accepted a proof of that Rule's Property.
 - On a Conflict, the Rules agent writes a Refinement. The Referee re-checks the existing proof against it. If the proof no longer passes, the Conflict is resolved. This re-check is the must-have.
-- The Prover may then try to prove the Property against the Refinement, and failing that, to give a counterexample: a concrete sequence of steps, checked by Lean, that breaks the Property. A counterexample that matches the Finding is the strongest outcome and is a should-have.
+- After the Refinement that resolves the Conflict, the Prover gets the restated Property, with the Finding, and may answer with a proof of it or a counterexample to it, within the same round, time and spend limits as a proof attempt. A counterexample that matches the Finding is the strongest outcome and is a should-have.
+  - A counterexample is a list of Lean terms (values for the Property's variables, then proofs of its hypotheses, often `rfl`) and a tactic block. The toolchain assembles a theorem stating the negation of the Property, applies the Property to those terms in order, and leaves the tactic block to derive False. So the values are concrete, and the counterexample cannot change the Property.
+  - Each value and the tactic block are screened like a proof body. The Referee re-checks the counterexample with Lean itself, under the same proof rules (standard axioms only).
+  - The transcript shows the counterexample beside the Finding, with the Prover's one-sentence account of its steps, and says whether they follow the same path: the same call, the same outcome of any transfer (it lands or fails), and the same kind of wrong state. An LLM makes that comparison; it decides nothing, because the counterexample is checked by Lean and the Rule is Broken either way.
+  - A proof of the restated Property is re-checked too, and means the Refinement still does not show the Finding. Neither outcome, nor finding nothing within the budget, changes any verdict or Payout.
 - If the proof still passes after two Refinements, it is withdrawn. If the Rules agent writes no Refinement that compiles (up to two retries, as for the first Formalization), the Conflict stays unresolved.
 - At a Conflict the transcript shows the Finding (its call and what was observed) and the proof it contradicts (the Property and the proof body), then a short explanation of why they disagree. An LLM words the explanation; it decides nothing.
-- Each Refinement and each re-check, with Lean's errors, is written to the Audit's folder.
+- Each Refinement and each re-check, with Lean's errors, is written to the Audit's folder, and so is the counterexample (or proof) the Referee checked after the Refinement.
 - In every case the Rule ends Broken, because a Finding outranks a proof.
 
 ### Verdicts
@@ -195,6 +199,7 @@ Each module below has a small interface and hides the work behind it.
 - A Recording holds, in order: every LLM exchange with its agent and token use, every toolchain outcome, every Payout hash, the settings used, and the commit it was made from.
 - Plain replay feeds the Recording through the same Audit runner with the replay gateway, replay toolchain and replay payer. The Referee and the Ledger run for real on the recorded evidence.
 - Replay hands each agent its own exchanges in order, and Scenario runs and Lean checks each in their own order. The Attacker runs only Scenarios and the Prover's side only Lean checks, so the part that runs side by side replays exactly, however its calls interleaved in the live run.
+- A live Audit may continue an earlier Recording of the same contract source: the earlier answers and outcomes are replayed in the same per-agent and per-kind orders, and only what the Recording does not hold goes to the live model and toolchain. This runs a step added after a Recording was made without paying for the whole Audit again. The new Recording holds everything, replays on its own, and states what it continued from and how many exchanges and outcomes were replayed and how many were live.
 - Replay with verification uses the real toolchain and compares each outcome with the recorded one. Any difference fails the replay with a message naming the Scenario or proof.
 - One checked Recording of the demo vault ships in the repository as the default replay.
 

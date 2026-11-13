@@ -1,6 +1,6 @@
 // Ticket 04: live Audit plumbing, tested with fakes and Recordings. No test calls a live LLM.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,8 +12,8 @@ import { type FetchFn, LiveGateway, LlmCallError } from "../src/llm/live.ts";
 import type { LlmAnswer, LlmGateway } from "../src/ports.ts";
 import { FakePayer, loadRecording, type Recording, ReplayToolchain, replayPorts } from "../src/replay/recording.ts";
 import { parseSettings, type Settings, SettingsError } from "../src/settings.ts";
-import { formalAnswer, lean, PROOF_R1, PROOF_R2, proofAnswer, refinementAnswer, storedLean } from "./hand-made.ts";
-import { FORMALIZATION, REFINED } from "./lean/cases.ts";
+import { counterexampleAnswer, formalAnswer, lean, PROOF_R1, PROOF_R2, proofAnswer, refinementAnswer, storedLean } from "./hand-made.ts";
+import { FORMALIZATION, R1_REFINED, REFINED } from "./lean/cases.ts";
 
 const fixture = (p: string) => new URL(`fixtures/${p}`, import.meta.url).pathname;
 const HAND_MADE = new URL("../recordings/hand-made.json", import.meta.url).pathname;
@@ -211,8 +211,10 @@ async function handMade() {
     refereeRun!,
     lean("R1", "ok"),
     lean("R2", "ok"),
-    storedLean("refined-statement"),
-    storedLean("after-refinement"),
+    storedLean("restated-statement"),
+    storedLean("after-restated"),
+    storedLean("counterexample-R1"),
+    storedLean("counterexample-R1"),
   ]);
   return { scout: scout!, rules: rules!, attackR1: attackR1!, attackR2: attackR2!, toolchain };
 }
@@ -230,7 +232,9 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
     { agent: "prover", answer: proofAnswer(PROOF_R1), tokens: { input: 3000, output: 500 }, usd: 0.022, model: "opus" },
     { agent: "prover", answer: proofAnswer(PROOF_R2), tokens: { input: 3000, output: 300 }, usd: 0.018, model: "opus" },
     { agent: "referee", answer: JSON.stringify({ explanation: EXPLANATION }), tokens: { input: 800, output: 90 }, usd: 0.002, ...glm },
-    { agent: "rules", answer: refinementAnswer(), tokens: { input: 4000, output: 900 }, usd: 0.012, ...glm },
+    { agent: "rules", answer: refinementAnswer(R1_REFINED.statement), tokens: { input: 4000, output: 900 }, usd: 0.012, ...glm },
+    { agent: "prover", answer: counterexampleAnswer(), tokens: { input: 5000, output: 700 }, usd: 0.03, model: "opus" },
+    { agent: "referee", answer: JSON.stringify({ samePath: true, why: SAME_PATH }), tokens: { input: 1200, output: 60 }, usd: 0.002, ...glm },
   ]);
   const outDir = await tempDir();
   const { result, recordingPath, notes } = await liveAudit({
@@ -244,16 +248,16 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   const count = (agent: AgentName) => fake.calls.filter((a) => a === agent).length;
   assert.deepEqual(
     ["scout", "rules", "attacker", "prover", "referee"].map((a) => count(a as AgentName)),
-    [2, 3, 2, 2, 1],
+    [2, 3, 2, 3, 2],
   );
   assert.deepEqual(fake.calls.slice(0, 3), ["scout", "scout", "rules"], "the Scout, then the Rules agent, before anything runs side by side");
-  assert.deepEqual(fake.calls.slice(-2), ["referee", "rules"], "after the Referee: the explanation, then the Refinement");
+  assert.deepEqual(fake.calls.slice(-4), ["referee", "rules", "prover", "referee"], "after the Referee: the explanation, the Refinement, the counterexample, the comparison");
 
   assert.deepEqual(result!.verdicts, { R1: "Broken", R2: "Proven" });
   assert.deepEqual(result!.scoutMap?.moneyMethods, ["deposit", "withdraw"]);
   assert.match(result!.scoutMap!.standingNote, /deployed account/);
   assert.deepEqual(result!.rules.map((r) => r.id), ["R1", "R2"]);
-  assert.ok(result!.transcript.includes("  Total spend: $0.0733 (cap $5.00)"));
+  assert.ok(result!.transcript.includes("  Total spend: $0.1053 (cap $5.00)"));
 
   // One Conflict, one Refinement, the old proof failing against it.
   assert.equal(result!.conflicts.length, 1);
@@ -277,6 +281,10 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
     "== Referee: re-check of the old proof against Refinement 1 ==",
     "R1: the old proof NO LONGER PASSES",
     "The Conflict is resolved",
+    "== Prover: the restated R1 against Refinement 1 ==",
+    "R1: the counterexample HOLDS",
+    `Same path: YES. ${SAME_PATH}`,
+    "The Attacker and the Prover agree on why R1 is broken.",
     "R1 ends Broken: a Finding outranks a proof.",
     "== Verdicts ==",
   ]) {
@@ -287,11 +295,11 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   assert.ok(t.some((l) => l.includes("The Attacker and the Prover run side by side")));
 
   const recording = await loadRecording(recordingPath);
-  assert.equal(recording.exchanges.length, 10);
+  assert.equal(recording.exchanges.length, 12);
   assert.ok(recording.exchanges.every((e) => typeof e.ms === "number"), "each exchange's time is recorded");
   assert.equal(recording.exchanges[0]!.model, "glm");
   assert.match(recording.exchanges[1]!.prompt!, /previous answer was invalid/);
-  const refinePrompt = recording.exchanges.at(-1)!.prompt!;
+  const refinePrompt = recording.exchanges.at(-3)!.prompt!;
   assert.match(refinePrompt, /There is a Conflict on R1/);
   assert.match(refinePrompt, /ONLY the call "withdraw"/);
   assert.match(refinePrompt, /start step and a resolve step/);
@@ -299,11 +307,14 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   const kinds = (op: "runScenario" | "checkLean") =>
     recording.toolchain.filter((t) => t.op === op).map((t) => (t.op === "runScenario" ? t.scenario : t.property));
   assert.deepEqual(kinds("runScenario"), ["S1", "S1"], "the Attacker's run, then the Referee's");
-  assert.deepEqual(kinds("checkLean"), ["R1", "R2", "R1", "R2", "R1", "R2", "R1", "R1"], "statements, the Prover's, the Referee's, then the Refinement's statement and the re-check");
+  assert.deepEqual(kinds("checkLean"), ["R1", "R2", "R1", "R2", "R1", "R2", "R1", "R1", "R1_counterexample", "R1_counterexample"],
+    "statements, the Prover's, the Referee's, the Refinement's statement and the re-check, then the counterexample, the Prover's check and the Referee's",
+  );
   assert.ok(recording.toolchain.every((t) => t.op !== "checkLean" || typeof t.outcome.ms === "number"), "each Lean check's time is recorded");
   assert.equal(recording.settings.stopAfter, undefined);
   assert.equal(recording.settings.prover, true);
   assert.equal(recording.settings.conflicts, true);
+  assert.equal(recording.settings.counterexamples, true);
 
   // Each Formalization and each re-check outcome is written to the Audit's folder.
   assert.equal(await readFile(join(outDir, "formalization.lean"), "utf8"), `${FORMALIZATION.trimEnd()}\n`);
@@ -313,7 +324,14 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   assert.match(recheck, /^-- Re-check of the old proof of R1 against Refinement 1: NO LONGER PASSES/);
   assert.match(recheck, /Invalid alternative name `withdraw`/);
   assert.match(recheck, /theorem property_R1 :/);
-  assert.equal(JSON.parse(await readFile(join(outDir, "conflicts.json"), "utf8"))[0].outcome, "resolved");
+  const conflictsFile = JSON.parse(await readFile(join(outDir, "conflicts.json"), "utf8"));
+  assert.equal(conflictsFile[0].outcome, "resolved");
+  assert.equal(conflictsFile[0].afterRefinement.counterexample.samePath, true);
+  const cxFile = await readFile(join(outDir, "refinements", "R1-refinement-1-counterexample.lean"), "utf8");
+  assert.match(cxFile, /^-- Counterexample to the restated R1: HOLDS \(Lean confirms/);
+  assert.match(cxFile, /-- Same path as Finding S1: YES/);
+  assert.match(cxFile, /theorem property_R1_counterexample :\n    ¬ \(∀/);
+  assert.match(cxFile, /  have hw := h \(\{ balance/);
 
   const file = JSON.parse(await readFile(join(outDir, "scenarios", "S1.json"), "utf8"));
   assert.equal(file.contractPath, fixture("vault.rs"));
@@ -335,10 +353,42 @@ test("a live run of the buggy vault: the Attacker and the Prover side by side, a
   assert.deepEqual(replayed.transcript, result!.transcript);
   assert.deepEqual(replayed.rules, result!.rules);
   assert.deepEqual(replayed.conflicts, result!.conflicts);
+
+  // Continuing: a Recording that stops before the counterexample (as ticket 08's does) is continued, and only the
+  // Prover's counterexample and the comparison are asked live. The result is the same, and the Recording says so.
+  const earlier = structuredClone(recording);
+  earlier.exchanges = earlier.exchanges.slice(0, -2);
+  earlier.toolchain = earlier.toolchain.filter((t) => t.op !== "checkLean" || t.property !== "R1_counterexample");
+  const earlierPath = join(await tempDir(), "earlier.json");
+  await writeFile(earlierPath, JSON.stringify(earlier));
+  const liveRest = new Scripted(recording.exchanges.slice(-2).map(({ agent, answer, tokens, usd, model }) => ({ agent, answer, tokens, usd, model })));
+  const cont = await liveAudit({
+    contractPath: fixture("vault.rs"),
+    outDir: await tempDir(),
+    settings: settings(),
+    llm: () => liveRest,
+    toolchain: new ReplayToolchain([storedLean("counterexample-R1"), storedLean("counterexample-R1")]),
+    continueFrom: earlierPath,
+  });
+  assert.deepEqual(liveRest.calls, ["prover", "referee"], "only the new step is asked live");
+  assert.deepEqual(cont.result!.transcript, result!.transcript);
+  assert.deepEqual(cont.result!.conflicts, result!.conflicts);
+  const contRecording = await loadRecording(cont.recordingPath);
+  assert.deepEqual(contRecording.settings.continuedFrom, {
+    recording: earlierPath,
+    replayedExchanges: 10,
+    replayedPromptsChanged: 0,
+    liveExchanges: 2,
+    replayedToolchain: 10,
+    liveToolchain: 2,
+  });
+  const fromCont = await runAudit(contRecording.contract.path, replayPorts(contRecording), auditOptionsFrom(contRecording.settings));
+  assert.deepEqual(fromCont.transcript, result!.transcript, "the continued Recording replays on its own");
 });
 
 const EXPLANATION =
   "The Scenario lowered alice's recorded balance by 1 NEAR while the transfer to the missing account failed, so nobody received it. The model treats withdraw as one step in which the transfer always lands.";
+const SAME_PATH = "Both withdraw to an account whose transfer then fails, and the caller's balance is not restored.";
 
 // ---- Spend cap and retries, from Recordings ----
 

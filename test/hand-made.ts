@@ -24,7 +24,7 @@ export function storedOutcome(r: Recording, index: 0 | 1): ScenarioOutcome {
 import type { LeanOutcome } from "../src/domain.ts";
 import type { ToolchainEntry } from "../src/replay/recording.ts";
 import { readFileSync } from "node:fs";
-import { CASES, type CaseName, FORMALIZATION, PROPERTIES, REFINED } from "./lean/cases.ts";
+import { CASES, type CaseName, caseProperty, COUNTEREXAMPLE_R1, FORMALIZATION, PROPERTIES, REFINED } from "./lean/cases.ts";
 
 /** The Rules agent's Formalization answer: the hand-written first Formalization and the Properties of R1 and R2. */
 export const formalAnswer = (formalization = FORMALIZATION, properties = PROPERTIES) => JSON.stringify({ formalization, properties });
@@ -39,10 +39,14 @@ const STORED: Record<string, LeanOutcome> = JSON.parse(
 ).outcomes;
 
 /** What real Lean said about one hand-written case (test/lean/lean-outcomes.json). */
-export const storedLean = (name: CaseName): ToolchainEntry => ({ op: "checkLean", property: CASES[name].rule, outcome: STORED[name]! });
+export const storedLean = (name: CaseName): ToolchainEntry => ({ op: "checkLean", property: caseProperty(CASES[name]).rule, outcome: STORED[name]! });
 
-/** The Rules agent's Refinement answer: the hand-written Refinement of withdraw, with R1's Property unchanged. */
-export const refinementAnswer = () => JSON.stringify({ formalization: REFINED, statement: PROPERTIES[0]!.statement });
+/** The Rules agent's Refinement answer: the hand-written Refinement of withdraw, with R1's Property unchanged unless restated. */
+export const refinementAnswer = (statement = PROPERTIES[0]!.statement) => JSON.stringify({ formalization: REFINED, statement });
+
+/** The Prover's answer after a Refinement: the hand-written counterexample to the restated R1, or another. */
+export const counterexampleAnswer = (cx: { witnesses: string[]; body: string; path: string } = COUNTEREXAMPLE_R1) =>
+  JSON.stringify({ counterexample: { witnesses: cx.witnesses, proof: cx.body, path: cx.path } });
 
 /** A stored Lean outcome for `rule`: accepted, or Lean's errors. A statement check (placeholder proof) reports sorryAx. */
 export function lean(rule: string, result: "ok" | "statement" | string, ms?: number): ToolchainEntry {

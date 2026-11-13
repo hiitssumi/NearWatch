@@ -8,11 +8,12 @@ import { join } from "node:path";
 import { type AuditOptions, runAudit } from "./audit.ts";
 import { readContract } from "./contract.ts";
 import type { AuditResult, Rule, Scenario } from "./domain.ts";
-import { assembleLeanFile, LocalLean, theoremName } from "./lean.ts";
+import { assembleLeanFile, LocalLean, negatedProperty, theoremName } from "./lean.ts";
 import { LiveGateway } from "./llm/live.ts";
 import { currentCommit, RecordingGateway, RecordingToolchain } from "./llm/recording.ts";
 import type { LlmGateway, Toolchain } from "./ports.ts";
-import { FakePayer } from "./replay/recording.ts";
+import { ReplayThenLive, ReplayThenLiveToolchain } from "./replay/continue.ts";
+import { FakePayer, loadRecording } from "./replay/recording.ts";
 import { LocalSandbox, VAULT_SETUP } from "./sandbox.ts";
 import { loadSettings, publicSettings, type Settings } from "./settings.ts";
 
@@ -44,14 +45,43 @@ export interface LiveAuditRequest {
   toolchain?: Toolchain;
   /** Called with each transcript line as it happens (the command prints them). */
   onLine?: (line: string) => void;
+  /**
+   * An earlier live Recording of the same contract to continue: its answers and outcomes are replayed, and only
+   * what it does not hold goes to the live model and the local toolchain. The new Recording says so.
+   */
+  continueFrom?: string;
 }
 
 export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditResult | null; recordingPath: string; notes: string[] }> {
   const source = await readContract(req.contractPath);
   const settings = typeof req.settings === "object" ? req.settings : await loadSettings(req.settings);
-  const toolchain = new RecordingToolchain(req.toolchain ?? localToolchain());
-  const llm = new RecordingGateway(req.llm ? req.llm(settings) : new LiveGateway(settings));
-  const options: AuditOptions = { spendCapUsd: settings.spendCapUsd, prover: true, conflicts: true };
+  const liveLlm = req.llm ? req.llm(settings) : new LiveGateway(settings);
+  const liveToolchain = req.toolchain ?? localToolchain();
+  let continued: { from: string; llm: ReplayThenLive; toolchain: ReplayThenLiveToolchain } | null = null;
+  if (req.continueFrom) {
+    const earlier = await loadRecording(req.continueFrom);
+    if (earlier.contract.source !== source) throw new Error(`${req.continueFrom} is a Recording of a different contract source; it cannot be continued.`);
+    continued = {
+      from: req.continueFrom,
+      llm: new ReplayThenLive(earlier.exchanges, liveLlm),
+      toolchain: new ReplayThenLiveToolchain(earlier.toolchain, liveToolchain),
+    };
+  }
+  const toolchain = new RecordingToolchain(continued?.toolchain ?? liveToolchain);
+  const llm = new RecordingGateway(continued?.llm ?? liveLlm);
+  const options: AuditOptions = { spendCapUsd: settings.spendCapUsd, prover: true, conflicts: true, counterexamples: true };
+  // Stored in the Recording, so anyone replaying it can see which part was live in this run.
+  const continuation = () =>
+    continued && {
+      continuedFrom: {
+        recording: continued.from,
+        replayedExchanges: continued.llm.replayed,
+        replayedPromptsChanged: continued.llm.promptsChanged,
+        liveExchanges: continued.llm.live,
+        replayedToolchain: continued.toolchain.replayed,
+        liveToolchain: continued.toolchain.live,
+      },
+    };
 
   await mkdir(req.outDir, { recursive: true });
   const progressPath = join(req.outDir, "progress.txt");
@@ -63,7 +93,7 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
       `${JSON.stringify(
         llm.toRecording({
           commit: currentCommit(),
-          settings: { ...publicSettings(settings), ...options },
+          settings: { ...publicSettings(settings), ...options, ...continuation() },
           contract: { path: req.contractPath, source },
           toolchain: toolchain.entries,
         }),
@@ -120,6 +150,20 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
         join(req.outDir, "refinements", `${name}-recheck.lean`),
         header + assembleLeanFile(r.formalization, r.property, r.recheck.body, "nearwatch-end"),
       );
+    }
+    // What the Prover found against the Refinement that resolved the Conflict, as the file the Referee checked.
+    const after = c.afterRefinement;
+    const r = c.refinements.at(-1);
+    if (after && r && (after.counterexample || after.proof)) {
+      const cx = after.counterexample;
+      const check = cx ? cx.check : after.proof!;
+      const name = `${c.rule}-refinement-${c.refinements.length}-${cx ? "counterexample" : "proof"}`;
+      const errors = check.outcome?.errors ? `/- Lean's errors:\n${check.outcome.errors.replaceAll("-/", "- /")}\n-/\n` : "";
+      const about = cx
+        ? `-- Counterexample to the restated ${c.rule}: ${check.accepted ? "HOLDS" : "REJECTED"} (${check.reason})\n-- The Prover's path: ${cx.path}\n-- Same path as Finding ${c.finding}: ${cx.samePath === null ? "not compared" : cx.samePath ? "YES" : "NO"} (compared by an LLM; it decides nothing). ${cx.comparison}\n`
+        : `-- Proof of the restated ${c.rule}: ${check.accepted ? "ACCEPTED" : "REJECTED"} (${check.reason})\n`;
+      const property = cx ? negatedProperty(r.property) : r.property;
+      await writeFile(join(req.outDir, "refinements", `${name}.lean`), about + errors + assembleLeanFile(r.formalization, property, check.body, "nearwatch-end"));
     }
   }
   const scenarios = [...result.findings.map((f) => f.scenario), ...result.leads.flatMap((l) => (l.scenario ? [l.scenario] : []))];

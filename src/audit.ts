@@ -1,12 +1,12 @@
 import { type Formalization, formalize, refine, rulesAgent, scout } from "./agents/agents.ts";
 import { attacker } from "./agents/attacker.ts";
 import { type AskContext, type Budget, type Lane, newBudget, newLane } from "./agents/ask.ts";
-import { prover } from "./agents/prover.ts";
-import type { AgentName, AuditResult, Conflict, Lead, Proof, Refinement, Rule, SandboxSetup, TokenUse } from "./domain.ts";
-import { theoremName } from "./lean.ts";
+import { proveOrRefute, prover } from "./agents/prover.ts";
+import type { AgentName, AuditResult, Conflict, Counterexample, Finding, Lead, Proof, Refinement, Rule, SandboxSetup, TokenUse } from "./domain.ts";
+import { negatedProperty, theoremName } from "./lean.ts";
 import { formatNear, ledger } from "./ledger.ts";
 import type { AuditPorts } from "./ports.ts";
-import { type DetectedConflict, explainConflict, recheckProof, referee } from "./referee.ts";
+import { checkCounterexample, comparePaths, type DetectedConflict, explainConflict, recheckProof, referee } from "./referee.ts";
 import { VAULT_SETUP } from "./sandbox.ts";
 import { DEFAULT_SPEND_CAP_USD } from "./settings.ts";
 
@@ -28,6 +28,11 @@ export interface AuditOptions {
    */
   conflicts?: boolean;
   /**
+   * After the Refinement that resolves a Conflict, give the Prover the restated Property: a proof of it, or a
+   * counterexample checked by Lean. Live Audits always do. Off by default so that older Recordings replay.
+   */
+  counterexamples?: boolean;
+  /**
    * Called with each transcript line as it happens, so a long Audit can be watched. Lines from the part
    * that runs side by side arrive at once, tagged with their side; the transcript still prints them in a
    * fixed order once both sides are done. Never stored in a Recording.
@@ -42,6 +47,7 @@ export function auditOptionsFrom(settings: Record<string, unknown>): AuditOption
   if (settings.stopAfter === "rules") o.stopAfter = "rules";
   if (settings.prover === true) o.prover = true;
   if (settings.conflicts === true) o.conflicts = true;
+  if (settings.counterexamples === true) o.counterexamples = true;
   return o;
 }
 
@@ -180,7 +186,8 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
 
   const conflicts: Conflict[] = [];
   for (const detected of options.conflicts ? result.conflicts : []) {
-    conflicts.push(await settleConflict(ctx, ports, source, rules.find((r) => r.id === detected.rule)!, formal!, detected));
+    const rule = rules.find((r) => r.id === detected.rule)!;
+    conflicts.push(await settleConflict(ctx, ports, source, rule, formal!, detected, options.counterexamples === true));
   }
 
   log("");
@@ -231,6 +238,7 @@ async function settleConflict(
   rule: Rule,
   formal: Formalization,
   detected: DetectedConflict,
+  counterexamples: boolean,
 ): Promise<Conflict> {
   const { log } = ctx;
   const { finding, proof } = detected;
@@ -255,6 +263,7 @@ async function settleConflict(
   log(`  Payout: the Prover's claim on ${rule.id}'s share is cancelled and passes to the Attacker. A Finding outranks a proof.`);
 
   const refinements: Refinement[] = [];
+  let resolvedBy: Formalization | null = null;
   let outcome: Conflict["outcome"] = "unresolved";
   for (let n = 1; n <= MAX_REFINEMENTS; n++) {
     log("");
@@ -268,7 +277,10 @@ async function settleConflict(
     const refinedProperty = refined.properties[0]!;
     const same = refinedProperty.statement.trim() === property?.statement.trim();
     log(`  Refinement ${n} compiles (${refined.formalization.split("\n").length} lines).`);
-    log(`  ${rule.id}: ${refinedProperty.statement}${same ? " (unchanged)" : " (restated)"}`);
+    // One transcript line per line of the statement, so the transcript and progress.txt line up.
+    const [first, ...rest] = refinedProperty.statement.trim().split("\n");
+    log(`  ${rule.id}${same ? " (unchanged)" : " (restated)"}: ${first}`);
+    for (const line of rest) log(`      ${line}`);
     const recheck = await recheckProof(ports.toolchain, refined.formalization, refinedProperty, proof);
     refinements.push({ method: call.method, formalization: refined.formalization, property: refinedProperty, recheck });
     log("");
@@ -278,6 +290,7 @@ async function settleConflict(
       log(`  ${rule.id}: the old proof NO LONGER PASSES (${recheck.reason}${lean ? `: ${lean.trim().slice(0, 200)}` : ""}).`);
       log(`  The Conflict is resolved: the proof held only because the first Formalization made ${call.method} one step.`);
       outcome = "resolved";
+      resolvedBy = { formalization: refined.formalization, properties: [refinedProperty] };
       break;
     }
     log(`  ${rule.id}: the old proof STILL PASSES against Refinement ${n}.`);
@@ -286,8 +299,70 @@ async function settleConflict(
       outcome = "withdrawn";
     }
   }
+  const conflict: Conflict = { rule: rule.id, finding: finding.scenario.id, proof, explanation, refinements, outcome };
+  if (counterexamples && resolvedBy) conflict.afterRefinement = await afterRefinement(ctx, ports, rule, finding, resolvedBy, refinements.length);
   log(`  ${rule.id} ends Broken: a Finding outranks a proof.`);
-  return { rule: rule.id, finding: finding.scenario.id, proof, explanation, refinements, outcome };
+  return conflict;
+}
+
+/**
+ * The Prover's turn on the restated Property of the Refinement that resolved a Conflict. A counterexample is
+ * re-checked by the Referee with Lean and shown beside the Finding; a proof is re-checked the same way. Neither
+ * changes the verdict or the Payouts: the Rule is Broken already.
+ */
+async function afterRefinement(
+  ctx: AskContext,
+  ports: AuditPorts,
+  rule: Rule,
+  finding: Finding,
+  refined: Formalization,
+  n: number,
+): Promise<NonNullable<Conflict["afterRefinement"]>> {
+  const { log } = ctx;
+  const property = refined.properties[0]!;
+  const spentBefore = ctx.budget?.byAgent.prover ?? 0;
+  log("");
+  log(`== Prover: the restated ${rule.id} against Refinement ${n} ==`);
+  log(`  (The Prover may prove it, or give a counterexample: values for which Lean confirms it is false.)`);
+  const found = await proveOrRefute(ctx, ports.toolchain, refined, rule, finding);
+  const spent = (ctx.budget?.byAgent.prover ?? 0) - spentBefore;
+  log(`  Cost of this step: $${spent.toFixed(4)}`);
+
+  if (found.kind === "none") {
+    log(`  The Audit's result is unchanged.`);
+    return { counterexample: null, proof: null };
+  }
+  log("");
+  if (found.kind === "proof") {
+    log(`== Referee: re-check of the Prover's proof of the restated ${rule.id} ==`);
+    const check = await recheckProof(ports.toolchain, refined.formalization, property, { rule: rule.id, body: found.body, accepted: true, reason: "" });
+    log(`  ${rule.id}: ${check.accepted ? "ACCEPTED" : "REJECTED"} (${check.reason}).`);
+    if (check.accepted) log(`  The Refinement still does not show what the Finding shows. The Audit's result is unchanged.`);
+    return { counterexample: null, proof: check };
+  }
+
+  log(`== Referee: re-check of the Prover's counterexample to the restated ${rule.id} ==`);
+  const check = await checkCounterexample(ports.toolchain, refined.formalization, property, found);
+  const cx: Counterexample = { rule: rule.id, refinement: n, witnesses: found.witnesses, body: found.body, path: found.path, check, samePath: null, comparison: "" };
+  if (!check.accepted) {
+    log(`  ${rule.id}: the counterexample is REJECTED (${check.reason}). The Audit's result is unchanged.`);
+    return { counterexample: cx, proof: null };
+  }
+  log(`  ${rule.id}: the counterexample HOLDS (${check.reason}).`);
+  log(`    theorem ${theoremName(negatedProperty(property).rule)} : ¬ (restated ${rule.id})`);
+  for (const line of check.body.split("\n")) log(`      ${line}`);
+  const call = finding.scenario.call;
+  log("  Beside the Finding:");
+  log(`    Finding ${finding.scenario.id} (Attacker, real contract): ${call.as} -> ${call.method}(${JSON.stringify(call.args)}); failed receipts: ${finding.outcome.observations.failedReceipts.length ? finding.outcome.observations.failedReceipts.join("; ") : "none"}`);
+  log(`    Counterexample (Prover, Refinement ${n}, in its own words): ${found.path}`);
+  const compared = await comparePaths(ctx, rule, finding, { formalization: refined.formalization, property }, found);
+  if (compared) {
+    cx.samePath = compared.samePath;
+    cx.comparison = compared.why;
+    log(`    Same path: ${compared.samePath ? "YES" : "NO"}. ${compared.why} (Compared by an LLM; it decides nothing.)`);
+    if (compared.samePath) log(`  The Attacker and the Prover agree on why ${rule.id} is broken.`);
+  } else log("    Same path: not compared.");
+  return { counterexample: cx, proof: null };
 }
 
 function logCosts(log: (line: string) => void, tokens: Record<string, TokenUse>, budget: Budget): void {

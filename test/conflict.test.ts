@@ -8,7 +8,8 @@ import { RecordingGateway } from "../src/llm/recording.ts";
 import { loadRecording, type Recording, replayPorts, type ToolchainEntry } from "../src/replay/recording.ts";
 import { rulesAnswer } from "../src/schemas.ts";
 import { InvalidAnswer } from "../src/validate.ts";
-import { formalAnswer, HAND_MADE, lean, PROOF_R1, PROOF_R2, proofAnswer, refinementAnswer, storedLean } from "./hand-made.ts";
+import { counterexampleAnswer, formalAnswer, HAND_MADE, lean, PROOF_R1, PROOF_R2, proofAnswer, refinementAnswer, storedLean } from "./hand-made.ts";
+import { COUNTEREXAMPLE_R1, R1_REFINED, SUCCESS_BRANCH } from "./lean/cases.ts";
 
 const tokens = { input: 3000, output: 400 };
 const explanation = JSON.stringify({ explanation: "The transfer failed and nothing restored the balance." });
@@ -34,10 +35,10 @@ async function recording(after: { agent: AgentName; answer: string; usd?: number
   return r;
 }
 
-async function audit(r: Recording) {
+async function audit(r: Recording, counterexamples = false) {
   const ports = replayPorts(r);
   const llm = new RecordingGateway(ports.llm);
-  const result = await runAudit(r.contract.path, { ...ports, llm }, { prover: true, conflicts: true });
+  const result = await runAudit(r.contract.path, { ...ports, llm }, { prover: true, conflicts: true, counterexamples });
   const prompts = (agent: AgentName) => llm.exchanges.filter((e) => e.agent === agent).map((e) => e.prompt!);
   return { result, prompts };
 }
@@ -122,6 +123,102 @@ test("the Refinement re-check is the real Lean outcome: the old proof fails agai
   assert.match(c!.refinements[0]!.recheck.outcome!.errors, /Alternative `withdrawStart` has not been provided/);
 });
 
+// ---- After the Refinement: a counterexample (ticket 17) ----
+
+const same = JSON.stringify({ samePath: true, why: "Both withdraw to an account whose transfer fails, and nothing restores the balance." });
+/** Up to the Refinement that resolves the Conflict, with R1 restated over withdraw's start and resolve steps. */
+const upToRefinement = [...provedBoth, { agent: "referee" as const, answer: explanation }, { agent: "rules" as const, answer: refinementAnswer(R1_REFINED.statement) }];
+const leanUpToRefinement = [...statements, ...proverAndReferee, storedLean("restated-statement"), storedLean("after-restated")];
+
+test("after the Refinement, the Prover gives a counterexample that Lean confirms, shown beside the Finding on the same path", async () => {
+  const r = await recording(
+    [...upToRefinement, { agent: "prover", answer: counterexampleAnswer(), usd: 0.03 }, { agent: "referee", answer: same }],
+    "finding",
+    // The Prover's own check of the counterexample, then the Referee's.
+    [...leanUpToRefinement, storedLean("counterexample-R1"), storedLean("counterexample-R1")],
+  );
+  const { result, prompts } = await audit(r, true);
+  const [c] = result.conflicts;
+  assert.equal(c!.outcome, "resolved");
+  const cx = c!.afterRefinement!.counterexample!;
+  assert.equal(cx.refinement, 1);
+  assert.deepEqual(cx.witnesses, COUNTEREXAMPLE_R1.witnesses);
+  assert.equal(cx.check.accepted, true);
+  assert.equal(cx.check.rule, "R1");
+  assert.match(cx.check.body, /^intro h\nhave hw := h \(\{ balance := fun _ => 1,[^\n]*\("ghost"\) \(1\) \(false\) \(rfl\)\nsimp \[step, drop\] at hw$/);
+  assert.equal(cx.samePath, true);
+  assert.equal(c!.afterRefinement!.proof, null);
+
+  const t = result.transcript;
+  const at = (line: string) => t.findIndex((l) => l.includes(line));
+  for (const line of [
+    "== Prover: the restated R1 against Refinement 1 ==",
+    "R1 round 1 (3000 in, 400 out, $0.0300, 0.0 s): a counterexample; Lean confirms it -> submitted to the Referee",
+    "Cost of this step: $0.0300",
+    "== Referee: re-check of the Prover's counterexample to the restated R1 ==",
+    "R1: the counterexample HOLDS (Lean confirms the Property is false for these values; axioms: propext, Quot.sound).",
+    "theorem property_R1_counterexample : ¬ (restated R1)",
+    "Finding S1 (Attacker, real contract):",
+    `Counterexample (Prover, Refinement 1, in its own words): ${COUNTEREXAMPLE_R1.path}`,
+    "Same path: YES. Both withdraw to an account whose transfer fails, and nothing restores the balance. (Compared by an LLM; it decides nothing.)",
+    "The Attacker and the Prover agree on why R1 is broken.",
+  ]) {
+    assert.ok(at(line) >= 0, `the transcript shows: ${line}`);
+  }
+  assert.ok(at("NO LONGER PASSES") < at("== Prover: the restated") && at("Same path: YES") < at("R1 ends Broken"));
+
+  // The Prover sees the Finding, the refined file, and both ways to answer; the Referee compares with the Finding.
+  const asked = prompts("prover").at(-1)!;
+  assert.match(asked, /"receiver_id":"nobody-here"/);
+  assert.match(asked, /theorem property_R1_counterexample :\n    ¬ \(∀ \(s : State\) \(c r : Account\)/);
+  assert.match(asked, /have hw := h \(<VALUE 1>\) \(<VALUE 2>\) \(\.\.\.\)/);
+  assert.match(prompts("referee").at(-1)!, /The Prover describes its steps as: alice withdraws 1 to ghost/);
+
+  // The verdicts and Payouts are what they are without the step: a Finding already made R1 Broken.
+  const without = await audit(r);
+  assert.deepEqual(result.verdicts, without.result.verdicts);
+  assert.deepEqual(result.payouts, without.result.payouts);
+});
+
+test("with no counterexample within the Prover's rounds, the Audit's result is unchanged", async () => {
+  // Round 1 puts a placeholder in a value, which is refused before Lean; the other 11 use the success branch, which Lean rejects.
+  const sorry = { ...COUNTEREXAMPLE_R1, witnesses: ["sorry", ...COUNTEREXAMPLE_R1.witnesses.slice(1)] };
+  const r = await recording(
+    [
+      ...upToRefinement,
+      { agent: "prover", answer: counterexampleAnswer(sorry) },
+      ...Array.from({ length: 11 }, () => ({ agent: "prover" as const, answer: counterexampleAnswer(SUCCESS_BRANCH) })),
+    ],
+    "finding",
+    [...leanUpToRefinement, ...Array.from({ length: 11 }, () => storedLean("success-branch"))],
+  );
+  const { result, prompts } = await audit(r, true);
+  const t = result.transcript;
+  assert.ok(t.includes("  R1 round 1 (3000 in, 400 out, 0.0 s): rejected, a value or the tactic block uses the placeholder `sorry`"));
+  assert.ok(t.some((l) => /^ {2}R1 round 2 .*: rejected, Lean: .*error: unsolved goals/.test(l)));
+  assert.ok(t.includes("  R1: no proof and no counterexample within the budget (stopped by 12 rounds, 0.0 s used)"));
+  assert.ok(t.includes("  The Audit's result is unchanged."));
+  assert.deepEqual(result.conflicts[0]!.afterRefinement, { counterexample: null, proof: null });
+  assert.match(prompts("prover").at(-1)!, /Your earlier attempts \(latest last\)[\s\S]*values: [\s\S]*\| true \| rfl/);
+  const without = await audit(r);
+  assert.deepEqual(result.verdicts, without.result.verdicts);
+  assert.deepEqual(result.payouts, without.result.payouts);
+});
+
+test("a proof of the restated Property instead is re-checked, and changes nothing either", async () => {
+  const r = await recording(
+    [...upToRefinement, { agent: "prover", answer: proofAnswer("simp [step]") }],
+    "finding",
+    [...leanUpToRefinement, lean("R1", "ok"), lean("R1", "ok")],
+  );
+  const { result } = await audit(r, true);
+  const after = result.conflicts[0]!.afterRefinement!;
+  assert.equal(after.counterexample, null);
+  assert.equal(after.proof?.accepted, true);
+  assert.ok(result.transcript.includes("  The Refinement still does not show what the Finding shows. The Audit's result is unchanged."));
+  assert.deepEqual(result.verdicts, { R1: "Broken", R2: "Proven" });
+});
+
 test("side by side, each side spends only its half of what was left under the cap, so one stopping never depends on the other", async () => {
   // The cap is $1 and the Scout and Rules agent spend nothing, so each side may spend $0.50. The Attacker's
   // first answer costs $0.60 and uses up its side; the Rules agent's Formalization and the Prover go on.
@@ -195,4 +292,33 @@ test("the live Recording replays: one Conflict on the withdraw Rule, one Refinem
   assert.ok(result.transcript.includes("  R3 ends Broken: a Finding outranks a proof."));
   assert.ok(result.payouts.some((p) => p.to === "attacker" && p.reason === "R3 Broken"));
   assert.equal(r.settings.conflicts, true);
+});
+
+// ---- The live run (ticket 17), continuing ticket 08's ----
+
+test("the live counterexample Recording replays: the Prover's counterexample to the restated withdraw Rule holds and follows the Finding's path", async () => {
+  const r = await loadRecording(new URL("../recordings/live-counterexample-buggy-vault.json", import.meta.url).pathname);
+  // Everything up to the Refinement is ticket 08's run, replayed; the counterexample and the comparison were live.
+  assert.deepEqual(r.settings.continuedFrom, {
+    recording: "recordings/live-conflict-buggy-vault.json",
+    replayedExchanges: 23,
+    replayedPromptsChanged: 0,
+    liveExchanges: 2,
+    replayedToolchain: 46,
+    liveToolchain: 2,
+  });
+  assert.equal(r.settings.counterexamples, true);
+  const result = await runAudit(r.contract.path, replayPorts(r), auditOptionsFrom(r.settings));
+  assert.deepEqual(result.verdicts, { R1: "Proven", R2: "Proven", R3: "Broken", R4: "Proven", R5: "Proven" });
+  const [c] = result.conflicts;
+  assert.equal(c!.outcome, "resolved");
+  const cx = c!.afterRefinement!.counterexample!;
+  assert.equal(cx.check.accepted, true);
+  assert.deepEqual(cx.witnesses.slice(1), ['"alice"', "1", '"ghost"', "false", "rfl"]);
+  assert.equal(cx.samePath, true);
+  assert.ok(result.transcript.includes("  The Attacker and the Prover agree on why R3 is broken."));
+  // The step changes no verdict and no Payout: ticket 08's Recording pays the same.
+  const t08 = await loadRecording(new URL("../recordings/live-conflict-buggy-vault.json", import.meta.url).pathname);
+  const before = await runAudit(t08.contract.path, replayPorts(t08), auditOptionsFrom(t08.settings));
+  assert.deepEqual(result.payouts, before.payouts);
 });
