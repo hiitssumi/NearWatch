@@ -98,70 +98,73 @@ export async function loadRecording(path: string): Promise<Recording> {
 
 export class ReplayError extends Error {}
 
-/** Returns stored answers in order; fails clearly when asked for an exchange that is not recorded. */
+/**
+ * Returns each agent's stored answers in that agent's own order; fails clearly when asked for an exchange
+ * that is not recorded. Agents that ran side by side (the Attacker and the Prover) interleave in a live
+ * Recording in whatever order their calls finished, so each agent reads only its own exchanges.
+ */
 export class ReplayGateway implements LlmGateway {
-  private next = 0;
-  private readonly exchanges: Recording["exchanges"];
+  private readonly queues = new Map<AgentName, Recording["exchanges"]>();
+  private readonly used = new Map<AgentName, number>();
   constructor(exchanges: Recording["exchanges"]) {
-    this.exchanges = exchanges;
+    for (const e of exchanges) {
+      const q = this.queues.get(e.agent) ?? [];
+      q.push(e);
+      this.queues.set(e.agent, q);
+    }
   }
   async ask(agent: AgentName, _prompt: string): Promise<LlmAnswer> {
-    const n = this.next;
-    const stored = this.exchanges[n];
+    const n = this.used.get(agent) ?? 0;
+    const q = this.queues.get(agent) ?? [];
+    const stored = q[n];
     if (!stored) {
-      throw new ReplayError(
-        `Replay asked for LLM exchange #${n + 1} (agent "${agent}"), but the Recording holds only ${this.exchanges.length} exchange(s).`,
-      );
+      throw new ReplayError(`Replay asked for exchange #${n + 1} of agent "${agent}", but the Recording holds only ${q.length} for that agent.`);
     }
-    if (stored.agent !== agent) {
-      throw new ReplayError(
-        `Replay asked for LLM exchange #${n + 1} from agent "${agent}", but the Recording has agent "${stored.agent}" there.`,
-      );
-    }
-    this.next++;
+    this.used.set(agent, n + 1);
     return { answer: stored.answer, tokens: stored.tokens, usd: stored.usd, model: stored.model, ms: stored.ms };
   }
 }
 
-/** Returns stored toolchain outcomes in order; fails clearly on any mismatch. */
+/**
+ * Returns stored toolchain outcomes, Scenario runs and Lean checks each in their own order; fails clearly
+ * on any mismatch. The Attacker runs only Scenarios and the Prover only Lean checks, so the two can run
+ * side by side and still replay exactly.
+ */
 export class ReplayToolchain implements Toolchain {
-  private next = 0;
-  private readonly outcomes: Recording["toolchain"];
+  private readonly scenarios: Recording["toolchain"];
+  private readonly lean: Recording["toolchain"];
+  private nextScenario = 0;
+  private nextLean = 0;
   constructor(outcomes: Recording["toolchain"]) {
-    this.outcomes = outcomes;
+    this.scenarios = outcomes.filter((e) => e.op === "runScenario");
+    this.lean = outcomes.filter((e) => e.op === "checkLean");
   }
   async runScenario(_contractPath: string, scenario: { id: string }): Promise<ScenarioOutcome> {
-    const n = this.next;
-    const stored = this.outcomes[n];
+    const n = this.nextScenario;
+    const stored = this.scenarios[n];
     if (!stored) {
       throw new ReplayError(
-        `Replay asked for toolchain outcome #${n + 1} (Scenario "${scenario.id}"), but the Recording holds only ${this.outcomes.length}.`,
+        `Replay asked for Scenario run #${n + 1} (Scenario "${scenario.id}"), but the Recording holds only ${this.scenarios.length}.`,
       );
     }
     if (stored.op !== "runScenario" || stored.scenario !== scenario.id) {
-      throw new ReplayError(
-        `Replay asked for toolchain outcome #${n + 1} for Scenario "${scenario.id}", but the Recording has ${describe(stored)} there.`,
-      );
+      throw new ReplayError(`Replay asked for Scenario run #${n + 1} for Scenario "${scenario.id}", but the Recording has ${describe(stored)} there.`);
     }
-    this.next++;
+    this.nextScenario++;
     if ("error" in stored) throw new Error(stored.error);
     return stored.outcome;
   }
 
   async checkLean(_formalization: string, property: Property, _proofBody: string): Promise<LeanOutcome> {
-    const n = this.next;
-    const stored = this.outcomes[n];
+    const n = this.nextLean;
+    const stored = this.lean[n];
     if (!stored) {
-      throw new ReplayError(
-        `Replay asked for toolchain outcome #${n + 1} (proof of ${property.rule}), but the Recording holds only ${this.outcomes.length}.`,
-      );
+      throw new ReplayError(`Replay asked for Lean check #${n + 1} (proof of ${property.rule}), but the Recording holds only ${this.lean.length}.`);
     }
     if (stored.op !== "checkLean" || stored.property !== property.rule) {
-      throw new ReplayError(
-        `Replay asked for toolchain outcome #${n + 1} for the proof of ${property.rule}, but the Recording has ${describe(stored)} there.`,
-      );
+      throw new ReplayError(`Replay asked for Lean check #${n + 1} for the proof of ${property.rule}, but the Recording has ${describe(stored)} there.`);
     }
-    this.next++;
+    this.nextLean++;
     return stored.outcome;
   }
 }

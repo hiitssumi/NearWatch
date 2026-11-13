@@ -46,6 +46,18 @@ pub fn validate(check: &RuleCheck, scenario: &Scenario) -> Result<(), HarnessErr
     })
 }
 
+/// The account references the condition uses, so they can be resolved before the sandbox starts.
+pub fn account_refs(check: &RuleCheck) -> Vec<String> {
+    let mut out = Vec::new();
+    let _ = visit_condition(&check.condition, &mut |e| {
+        if let Expr::Account { account } = e {
+            out.push(account.clone());
+        }
+        Ok(())
+    });
+    out
+}
+
 fn visit_condition(
     c: &Condition,
     f: &mut impl FnMut(&Expr) -> Result<(), HarnessError>,
@@ -87,12 +99,31 @@ fn parse_number(s: &str, what: &str) -> Result<i128, HarnessError> {
     }
 }
 
+/// A value in a Rule check: a number (yoctoNEAR, a count, a boolean as 1 or 0) or an account id.
+enum Value {
+    Num(i128),
+    Text { text: String, label: String },
+}
+
+impl Value {
+    fn num(self) -> Result<i128, HarnessError> {
+        match self {
+            Value::Num(n) => Ok(n),
+            Value::Text { text, label } => {
+                Err(HarnessError::invalid(format!("{label} is \"{text}\", which is not a whole number")))
+            }
+        }
+    }
+}
+
+/// `accounts` resolves an account expression (a reference to the call under test, or a literal name).
 pub fn evaluate(
     check: &RuleCheck,
     before: &ObservationSet,
     after: &ObservationSet,
+    accounts: &dyn Fn(&str) -> Result<String, HarnessError>,
 ) -> Result<bool, HarnessError> {
-    let lookup = |slot: &str, when: When| -> Result<i128, HarnessError> {
+    let lookup = |slot: &str, when: When| -> Result<Value, HarnessError> {
         let set = if when == When::Before { before } else { after };
         let raw = set
             .views
@@ -100,30 +131,50 @@ pub fn evaluate(
             .or_else(|| set.balances.get(slot))
             .ok_or_else(|| HarnessError::internal(format!("no observation for slot \"{slot}\"")))?;
         let label = format!("slot \"{slot}\" ({})", if when == When::Before { "before" } else { "after" });
-        parse_number(raw, &label)
+        Ok(match parse_number(raw, &label) {
+            Ok(n) => Value::Num(n),
+            Err(_) => Value::Text { text: raw.clone(), label },
+        })
     };
-    eval_condition(&check.condition, &lookup)
+    let ctx = Ctx { lookup: &lookup, accounts };
+    eval_condition(&check.condition, &ctx)
 }
 
-fn eval_condition(
-    c: &Condition,
-    lookup: &impl Fn(&str, When) -> Result<i128, HarnessError>,
-) -> Result<bool, HarnessError> {
+struct Ctx<'a> {
+    lookup: &'a dyn Fn(&str, When) -> Result<Value, HarnessError>,
+    accounts: &'a dyn Fn(&str) -> Result<String, HarnessError>,
+}
+
+fn eval_condition(c: &Condition, ctx: &Ctx) -> Result<bool, HarnessError> {
     Ok(match c {
         Condition::Compare { compare, left, right } => {
-            let (l, r) = (eval_expr(left, lookup)?, eval_expr(right, lookup)?);
-            match compare {
-                CompareOp::Lt => l < r,
-                CompareOp::Le => l <= r,
-                CompareOp::Eq => l == r,
-                CompareOp::Ne => l != r,
-                CompareOp::Ge => l >= r,
-                CompareOp::Gt => l > r,
+            let (l, r) = (eval_expr(left, ctx)?, eval_expr(right, ctx)?);
+            match (l, r) {
+                (Value::Text { text: a, .. }, Value::Text { text: b, .. }) => match compare {
+                    CompareOp::Eq => a == b,
+                    CompareOp::Ne => a != b,
+                    _ => {
+                        return Err(HarnessError::invalid(
+                            "accounts can only be compared with \"==\" or \"!=\"",
+                        ))
+                    }
+                },
+                (l, r) => {
+                    let (l, r) = (l.num()?, r.num()?);
+                    match compare {
+                        CompareOp::Lt => l < r,
+                        CompareOp::Le => l <= r,
+                        CompareOp::Eq => l == r,
+                        CompareOp::Ne => l != r,
+                        CompareOp::Ge => l >= r,
+                        CompareOp::Gt => l > r,
+                    }
+                }
             }
         }
         Condition::All { all } => {
             for c in all {
-                if !eval_condition(c, lookup)? {
+                if !eval_condition(c, ctx)? {
                     return Ok(false);
                 }
             }
@@ -131,7 +182,7 @@ fn eval_condition(
         }
         Condition::Any { any } => {
             for c in any {
-                if eval_condition(c, lookup)? {
+                if eval_condition(c, ctx)? {
                     return Ok(true);
                 }
             }
@@ -140,19 +191,20 @@ fn eval_condition(
     })
 }
 
-fn eval_expr(
-    e: &Expr,
-    lookup: &impl Fn(&str, When) -> Result<i128, HarnessError>,
-) -> Result<i128, HarnessError> {
+fn eval_expr(e: &Expr, ctx: &Ctx) -> Result<Value, HarnessError> {
     match e {
-        Expr::Slot { slot, when } => lookup(slot, *when),
-        Expr::Number { number } => parse_number(number, "number"),
+        Expr::Slot { slot, when } => (ctx.lookup)(slot, *when),
+        Expr::Number { number } => parse_number(number, "number").map(Value::Num),
+        Expr::Account { account } => {
+            Ok(Value::Text { text: (ctx.accounts)(account)?, label: format!("account \"{account}\"") })
+        }
         Expr::Op { op, left, right } => {
-            let (l, r) = (eval_expr(left, lookup)?, eval_expr(right, lookup)?);
+            let (l, r) = (eval_expr(left, ctx)?.num()?, eval_expr(right, ctx)?.num()?);
             match op {
                 ArithOp::Add => l.checked_add(r),
                 ArithOp::Sub => l.checked_sub(r),
             }
+            .map(Value::Num)
             .ok_or_else(|| HarnessError::invalid("arithmetic overflow in the Rule check"))
         }
     }
@@ -187,7 +239,7 @@ mod tests {
         let before = set(&[("v", "5")], &[("r", "1")]);
         let after = set(&[("v", "0")], &[("r", "3")]);
         // 1 - 3 = -2 < 0
-        assert!(evaluate(&c, &before, &after).unwrap());
+        assert!(evaluate(&c, &before, &after, &same).unwrap());
     }
 
     #[test]
@@ -203,7 +255,7 @@ mod tests {
         }));
         let before = set(&[("p", "false")], &[]);
         let after = set(&[("p", "true")], &[]);
-        assert!(evaluate(&c, &before, &after).unwrap());
+        assert!(evaluate(&c, &before, &after, &same).unwrap());
     }
 
     #[test]
@@ -214,8 +266,33 @@ mod tests {
             "condition": {"compare": "==", "left": {"slot": "o", "when": "after"}, "right": {"number": "0"}}
         }));
         let s = set(&[("o", "owner")], &[]);
-        let e = evaluate(&c, &s, &s).unwrap_err();
+        let e = evaluate(&c, &s, &s, &same).unwrap_err();
         assert!(e.message.contains("slot \"o\" (after)"), "{}", e.message);
+    }
+
+    fn same(s: &str) -> Result<String, HarnessError> {
+        Ok(s.to_string())
+    }
+
+    #[test]
+    fn compares_the_signer_with_an_account_a_view_returns() {
+        let c = check(serde_json::json!({
+            "methods": ["set_paused"],
+            "slots": [{"name": "owner", "kind": "view", "bind": {"view": {"method": "owner", "args": {}}}},
+                      {"name": "p", "kind": "view", "bind": {"view": {"method": "paused", "args": {}}}}],
+            "condition": {"all": [
+                {"compare": "!=", "left": {"account": "$caller"}, "right": {"slot": "owner", "when": "before"}},
+                {"compare": "!=", "left": {"slot": "p", "when": "after"}, "right": {"slot": "p", "when": "before"}}
+            ]}
+        }));
+        let before = set(&[("owner", "owner.test.near"), ("p", "false")], &[]);
+        let after = set(&[("owner", "owner.test.near"), ("p", "true")], &[]);
+        let signer = |who: &'static str| move |s: &str| -> Result<String, HarnessError> {
+            Ok(if s == "$caller" { who.to_string() } else { s.to_string() })
+        };
+        assert!(!evaluate(&c, &before, &after, &signer("owner.test.near")).unwrap(), "the owner pausing is not a break");
+        assert!(evaluate(&c, &before, &after, &signer("mallory.test.near")).unwrap(), "anyone else pausing is");
+        assert_eq!(account_refs(&c), vec!["$caller".to_string()]);
     }
 
     fn scenario(method: &str) -> Scenario {

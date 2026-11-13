@@ -14,13 +14,32 @@ export interface Budget {
 
 export const newBudget = (capUsd: number): Budget => ({ capUsd, spentUsd: 0, byAgent: {}, capReached: false });
 
+/**
+ * While the Attacker and the Prover run side by side, each side runs in a lane holding its own share of
+ * what was left under the cap. Whether a side is stopped then depends only on its own spending, never on
+ * how fast the other side spent, so a replay stops it exactly where the live run did.
+ */
+export interface Lane {
+  name: string;
+  allowanceUsd: number;
+  spentUsd: number;
+  capReached: boolean;
+}
+
+export const newLane = (name: string, allowanceUsd: number): Lane => ({ name, allowanceUsd, spentUsd: 0, capReached: false });
+
 export interface AskContext {
   llm: LlmGateway;
   tokens: Record<string, TokenUse>;
   log: (line: string) => void;
   /** Absent means no spend tracking and no cap. */
   budget?: Budget;
+  /** Set while agents run side by side: the share of the cap this agent's side may spend. */
+  lane?: Lane;
 }
+
+/** True once this agent may make no more calls: its lane's share is spent, or (outside a lane) the cap is reached. */
+export const capReached = (ctx: AskContext): boolean => (ctx.lane ? ctx.lane.capReached : (ctx.budget?.capReached ?? false));
 
 /** Records a call's price against the budget. */
 export function charge(ctx: AskContext, agent: string, usd: number | undefined): void {
@@ -28,10 +47,23 @@ export function charge(ctx: AskContext, agent: string, usd: number | undefined):
   if (!b || usd === undefined) return;
   b.spentUsd += usd;
   b.byAgent[agent] = (b.byAgent[agent] ?? 0) + usd;
+  if (ctx.lane) ctx.lane.spentUsd += usd;
 }
 
 /** True when the cap allows another call. Logs the moment the cap is reached, and each call it stops. */
 export function mayCall(ctx: AskContext, agent: string): boolean {
+  const lane = ctx.lane;
+  if (lane && ctx.budget) {
+    if (lane.spentUsd < lane.allowanceUsd) return true;
+    if (!lane.capReached) {
+      lane.capReached = true;
+      ctx.log(
+        `  ** Spend cap reached for the ${lane.name}: $${lane.spentUsd.toFixed(4)} of its $${lane.allowanceUsd.toFixed(2)} share. No more LLM calls on this side. **`,
+      );
+    }
+    ctx.log(`  (spend cap: ${agent} not asked)`);
+    return false;
+  }
   const b = ctx.budget;
   if (!b || b.spentUsd < b.capUsd) return true;
   if (!b.capReached) {

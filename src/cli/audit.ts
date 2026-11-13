@@ -14,8 +14,9 @@ if (!contractPath) {
 } else {
   const outDir = values.out ?? `audits/${new Date().toISOString().replace(/[:.]/g, "-")}`;
   try {
-    const { result, recordingPath, notes } = await liveAudit({ contractPath, outDir, settings: values.settings });
-    console.log(result!.transcript.join("\n"));
+    console.log(`Writing to ${outDir}; lines from the Attacker's and the Prover's sides, which run at the same time, are tagged.`);
+    const { recordingPath, notes } = await liveAudit({ contractPath, outDir, settings: values.settings, onLine: (l) => console.log(l) });
+    console.log(`\nTranscript, in order: ${outDir}/transcript.txt`);
     for (const n of notes) console.log(`\n${n}`);
     console.log(`\nRecording: ${recordingPath}  (replay with: npm run replay -- ${recordingPath})`);
   } catch (e) {

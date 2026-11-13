@@ -103,6 +103,6 @@ test("only the axiom report followed by the trailer's marker counts", () => {
 test("a replay asked for a proof check that is not next in the Recording fails clearly", async () => {
   const { run } = await setup([lean("accept-R2")], { withFinding: false });
   await assert.rejects(run([proof("accept-R1")]), {
-    message: "Replay asked for toolchain outcome #1 for the proof of R1, but the Recording has the proof of R2 there.",
+    message: "Replay asked for Lean check #1 for the proof of R1, but the Recording has the proof of R2 there.",
   });
 });

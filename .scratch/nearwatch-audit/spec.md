@@ -101,7 +101,7 @@ A reviewer who has no keys and no toolchain can replay a recorded Audit and see 
 ### Shape
 
 - One program in TypeScript on Node 24 runs the Audit. A separate Rust workspace holds the vaults and the sandbox harness. Lean files are plain files checked by the local Lean install, with no Lean package dependencies.
-- An Audit runs in this order: Scout, Rules agent, Attacker, Prover, Referee, Reporter. The Attacker and the Prover are independent but run one after the other, so a Recording replays in the order it was made. A Conflict sends control back to the Rules agent for a Refinement, then to the Prover and the Referee again.
+- An Audit runs in this order: Scout, Rules agent, then the Attacker and the Prover side by side (the Rules agent writes the Formalization on the Prover's side, before the Prover starts), then Referee, Reporter. The two sides need nothing from each other. Each side's transcript is held back and printed in a fixed order, so the transcript does not depend on which side finished first. A Conflict sends control back to the Rules agent for a Refinement, then to the Referee again.
 - Three commands: one runs a live Audit on a contract path, one replays a Recording (with a flag for verification), one sets up the testnet accounts.
 - Only Rust near-sdk contracts are accepted. Anything else is refused with a clear message before any LLM call.
 
@@ -131,7 +131,7 @@ Each module below has a small interface and hides the work behind it.
 
 - A Scenario is setup actions followed by one call under test. A setup action creates a named account with a balance, calls a contract method as a given account with given arguments, attached deposit and gas, or reads a view method. Any account named may be one that does not exist.
 - The harness records observations just before and just after the call under test: results of view calls, account balances, and which receipts failed. Before each observation it lets a few blocks pass, so gas refunds and returned deposits have landed.
-- A Rule check is a small comparison over those observations, written by the Rules agent, that is true when the Rule has been broken. It names the methods it is about, and the call under test must be one of them. For each observation it says what to read, in terms of the call under test (its signer, the contract, or one of its arguments) or a fixed account name. The Attacker chooses only the setup and the call (see `docs/adr/0003`).
+- A Rule check is a small comparison over those observations, written by the Rules agent, that is true when the Rule has been broken. It names the methods it is about, and the call under test must be one of them. For each observation it says what to read, in terms of the call under test (its signer, the contract, or one of its arguments) or a fixed account name. It may also compare an account (such as the signer) with another account or with a view that returns one, using only equal or not equal, so a Rule about who may call a method can say the signer is not the owner. The Attacker chooses only the setup and the call (see `docs/adr/0003`).
 - The harness, not the Attacker, evaluates the Rule check. A Scenario is a Finding only if the Referee's own run reports the Rule check true. Otherwise it is a Lead.
 - Reasons: the Attacker cannot fake a Finding, no LLM-written code is executed on the builder's machine, and the slow Rust compile happens once.
 
@@ -161,7 +161,9 @@ Each module below has a small interface and hides the work behind it.
 - A Conflict exists when the Referee has reproduced a Finding against a Rule and has also accepted a proof of that Rule's Property.
 - On a Conflict, the Rules agent writes a Refinement. The Referee re-checks the existing proof against it. If the proof no longer passes, the Conflict is resolved. This re-check is the must-have.
 - The Prover may then try to prove the Property against the Refinement, and failing that, to give a counterexample: a concrete sequence of steps, checked by Lean, that breaks the Property. A counterexample that matches the Finding is the strongest outcome and is a should-have.
-- If the proof still passes after two Refinements, it is withdrawn.
+- If the proof still passes after two Refinements, it is withdrawn. If the Rules agent writes no Refinement that compiles (up to two retries, as for the first Formalization), the Conflict stays unresolved.
+- At a Conflict the transcript shows the Finding (its call and what was observed) and the proof it contradicts (the Property and the proof body), then a short explanation of why they disagree. An LLM words the explanation; it decides nothing.
+- Each Refinement and each re-check, with Lean's errors, is written to the Audit's folder.
 - In every case the Rule ends Broken, because a Finding outranks a proof.
 
 ### Verdicts
@@ -192,6 +194,7 @@ Each module below has a small interface and hides the work behind it.
 
 - A Recording holds, in order: every LLM exchange with its agent and token use, every toolchain outcome, every Payout hash, the settings used, and the commit it was made from.
 - Plain replay feeds the Recording through the same Audit runner with the replay gateway, replay toolchain and replay payer. The Referee and the Ledger run for real on the recorded evidence.
+- Replay hands each agent its own exchanges in order, and Scenario runs and Lean checks each in their own order. The Attacker runs only Scenarios and the Prover's side only Lean checks, so the part that runs side by side replays exactly, however its calls interleaved in the live run.
 - Replay with verification uses the real toolchain and compares each outcome with the recorded one. Any difference fails the replay with a message naming the Scenario or proof.
 - One checked Recording of the demo vault ships in the repository as the default replay.
 
@@ -205,6 +208,7 @@ Each module below has a small interface and hides the work behind it.
 - Settings come from a local file that is never committed: the NEAR AI key, the model for each agent, the parent account and its key, and the spend cap. The repository carries an example file with names only.
 - Starting models: the Attacker on NEAR AI's uncensored DeepSeek model, the Prover on Claude Opus, the others on GLM 5.3. Exact ids and prices are in `BRIEF.md` section 8.
 - The spend cap per Audit defaults to $5. When it is reached, running agents stop, unfinished Scenarios become Leads, unfinished proofs count as no proof, and the Audit continues to the Referee.
+- While the Attacker and the Prover run side by side, each side may spend half of what is left under the cap. Whether a side is stopped then depends only on its own spending, so a replay stops it exactly where the live run did.
 
 ### README and licence
 

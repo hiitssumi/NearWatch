@@ -23,7 +23,8 @@ export function storedOutcome(r: Recording, index: 0 | 1): ScenarioOutcome {
 
 import type { LeanOutcome } from "../src/domain.ts";
 import type { ToolchainEntry } from "../src/replay/recording.ts";
-import { CASES, FORMALIZATION, PROPERTIES } from "./lean/cases.ts";
+import { readFileSync } from "node:fs";
+import { CASES, type CaseName, FORMALIZATION, PROPERTIES, REFINED } from "./lean/cases.ts";
 
 /** The Rules agent's Formalization answer: the hand-written first Formalization and the Properties of R1 and R2. */
 export const formalAnswer = (formalization = FORMALIZATION, properties = PROPERTIES) => JSON.stringify({ formalization, properties });
@@ -32,6 +33,16 @@ export const formalAnswer = (formalization = FORMALIZATION, properties = PROPERT
 export const proofAnswer = (proof: string) => JSON.stringify({ proof });
 export const PROOF_R1 = CASES["accept-R1"].body;
 export const PROOF_R2 = CASES["accept-R2"].body;
+
+const STORED: Record<string, LeanOutcome> = JSON.parse(
+  readFileSync(new URL("./lean/lean-outcomes.json", import.meta.url), "utf8"),
+).outcomes;
+
+/** What real Lean said about one hand-written case (test/lean/lean-outcomes.json). */
+export const storedLean = (name: CaseName): ToolchainEntry => ({ op: "checkLean", property: CASES[name].rule, outcome: STORED[name]! });
+
+/** The Rules agent's Refinement answer: the hand-written Refinement of withdraw, with R1's Property unchanged. */
+export const refinementAnswer = () => JSON.stringify({ formalization: REFINED, statement: PROPERTIES[0]!.statement });
 
 /** A stored Lean outcome for `rule`: accepted, or Lean's errors. A statement check (placeholder proof) reports sorryAx. */
 export function lean(rule: string, result: "ok" | "statement" | string, ms?: number): ToolchainEntry {

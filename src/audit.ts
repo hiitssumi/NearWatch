@@ -1,11 +1,12 @@
-import { type Formalization, formalize, rulesAgent, scout } from "./agents/agents.ts";
+import { type Formalization, formalize, refine, rulesAgent, scout } from "./agents/agents.ts";
 import { attacker } from "./agents/attacker.ts";
-import { type AskContext, type Budget, newBudget } from "./agents/ask.ts";
+import { type AskContext, type Budget, type Lane, newBudget, newLane } from "./agents/ask.ts";
 import { prover } from "./agents/prover.ts";
-import type { AgentName, AuditResult, Lead, Proof, SandboxSetup, TokenUse } from "./domain.ts";
+import type { AgentName, AuditResult, Conflict, Lead, Proof, Refinement, Rule, SandboxSetup, TokenUse } from "./domain.ts";
+import { theoremName } from "./lean.ts";
 import { formatNear, ledger } from "./ledger.ts";
 import type { AuditPorts } from "./ports.ts";
-import { referee } from "./referee.ts";
+import { type DetectedConflict, explainConflict, recheckProof, referee } from "./referee.ts";
 import { VAULT_SETUP } from "./sandbox.ts";
 import { DEFAULT_SPEND_CAP_USD } from "./settings.ts";
 
@@ -21,6 +22,17 @@ export interface AuditOptions {
    * before the Prover existed (which hold no Formalization) still replay; a Recording stores the choice.
    */
   prover?: boolean;
+  /**
+   * Settle each Conflict: explain it, ask for Refinements, re-check the old proof. Live Audits always do.
+   * Off by default so that Recordings made before Conflicts were settled still replay; a Recording stores it.
+   */
+  conflicts?: boolean;
+  /**
+   * Called with each transcript line as it happens, so a long Audit can be watched. Lines from the part
+   * that runs side by side arrive at once, tagged with their side; the transcript still prints them in a
+   * fixed order once both sides are done. Never stored in a Recording.
+   */
+  onLine?: (line: string) => void;
 }
 
 /** The Audit options stored in a Recording's settings, so a replay runs the same way the live run did. */
@@ -29,18 +41,24 @@ export function auditOptionsFrom(settings: Record<string, unknown>): AuditOption
   if (typeof settings.spendCapUsd === "number") o.spendCapUsd = settings.spendCapUsd;
   if (settings.stopAfter === "rules") o.stopAfter = "rules";
   if (settings.prover === true) o.prover = true;
+  if (settings.conflicts === true) o.conflicts = true;
   return o;
 }
 
 /**
  * The Audit runner: the one entry point the commands call and the tests attach to.
- * Order: Scout, Rules agent (Rules, then the Formalization and Properties), Attacker, Prover, Referee, Payouts.
- * The Attacker and the Prover run one after the other, so a Recording replays in the same order.
+ * Order: Scout, Rules agent, then side by side the Attacker and (the Rules agent's Formalization, then) the
+ * Prover, then the Referee, any Conflict with its Refinements, and the Payouts. Replay reads each agent's
+ * exchanges and each kind of toolchain outcome in its own order, so the side-by-side part replays exactly.
  * The Reporter arrives in a later ticket.
  */
 export async function runAudit(contractPath: string, ports: AuditPorts, options: AuditOptions = {}): Promise<AuditResult> {
   const transcript: string[] = [];
-  const log = (line: string) => transcript.push(line);
+  const onLine = options.onLine ?? (() => {});
+  const log = (line: string) => {
+    transcript.push(line);
+    onLine(line);
+  };
   const tokens: Record<string, TokenUse> = {};
   const budget = newBudget(options.spendCapUsd ?? DEFAULT_SPEND_CAP_USD);
   const ctx: AskContext = { llm: ports.llm, tokens, log, budget };
@@ -88,37 +106,70 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
       formalization: null,
       properties: [],
       proofs: [],
+      conflicts: [],
       transcript,
     };
   }
 
-  let formal: Formalization | null = null;
+  // The Attacker works on the real contract; the Rules agent's Formalization and the Prover work on Lean.
+  // Neither needs the other, so they run side by side. Each side logs to its own buffer and spends from
+  // its own lane, so the transcript and the spend cap come out the same however their calls interleave.
+  const side = (tag: string, lane?: Lane) => {
+    const lines: string[] = [];
+    const sideCtx: AskContext = {
+      ...ctx,
+      log: (l: string) => {
+        lines.push(l);
+        onLine(`[${tag}] ${l}`);
+      },
+      lane,
+    };
+    return { lines, ctx: sideCtx };
+  };
+  // Held-back side lines go into the transcript only: onLine has already seen them.
+  const flush = (lines: string[]) => transcript.push(...lines);
+  const remaining = Math.max(0, budget.capUsd - budget.spentUsd);
+  const attackSide = side("attacker", options.prover ? newLane("Attacker's side", remaining / 2) : undefined);
+  const proofLane = options.prover ? newLane("Prover's side", remaining / 2) : undefined;
+  const formalSide = side("rules", proofLane);
+  const proverSide = side("prover", proofLane);
+
+  const attacking =
+    map && rules.length > 0
+      ? attacker(attackSide.ctx, ports.toolchain, contractPath, options.setup ?? VAULT_SETUP, source, map, rules)
+      : Promise.resolve({ claimed: [], leads: [], answered: false });
+  const proving = (async (): Promise<{ formal: Formalization | null; proofs: Proof[] }> => {
+    if (!options.prover || !map || rules.length === 0) return { formal: null, proofs: [] };
+    const formal = await formalize(formalSide.ctx, ports.toolchain, source, map, rules);
+    if (!formal) return { formal, proofs: [] };
+    const proved = await prover(proverSide.ctx, ports.toolchain, formal, rules);
+    if (proved.answered) ran.add("prover");
+    return { formal, proofs: proved.proofs };
+  })();
+  const [attack, { formal, proofs }] = await Promise.all([attacking, proving]);
+  if (attackSide.ctx.lane?.capReached || proofLane?.capReached) budget.capReached = true;
+
   if (options.prover) {
     log("");
+    log(`(The Attacker and the Prover run side by side; each side may spend half of the $${remaining.toFixed(2)} left under the cap.)`);
+    log("");
     log("== Rules agent: Formalization and Properties ==");
-    formal = map && rules.length > 0 ? await formalize(ctx, ports.toolchain, source, map, rules) : null;
+    flush(formalSide.lines);
     for (const p of formal?.properties ?? []) log(`  ${p.rule}: ${p.statement}`);
     if (!map || rules.length === 0) log("  (no Rules to state)");
   }
 
   log("");
   log("== Attacker ==");
-  const attack =
-    map && rules.length > 0
-      ? await attacker(ctx, ports.toolchain, contractPath, options.setup ?? VAULT_SETUP, source, map, rules)
-      : { claimed: [], leads: [], answered: false };
+  flush(attackSide.lines);
   if (attack.answered) ran.add("attacker");
   if (!map || rules.length === 0) log("  (nothing to attack)");
 
-  let proofs: Proof[] = [];
   if (options.prover) {
     log("");
     log("== Prover ==");
-    if (formal) {
-      const proved = await prover(ctx, ports.toolchain, formal, rules);
-      if (proved.answered) ran.add("prover");
-      proofs = proved.proofs;
-    } else log("  (no Formalization to prove anything against)");
+    flush(proverSide.lines);
+    if (!formal) log("  (no Formalization to prove anything against)");
   }
 
   log("");
@@ -126,6 +177,11 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
   const submitted = formal ? { ...formal, proofs } : undefined;
   const result = await referee(contractPath, rules, attack.claimed, ports.toolchain, log, submitted);
   const leads: Lead[] = [...attack.leads, ...result.leads];
+
+  const conflicts: Conflict[] = [];
+  for (const detected of options.conflicts ? result.conflicts : []) {
+    conflicts.push(await settleConflict(ctx, ports, source, rules.find((r) => r.id === detected.rule)!, formal!, detected));
+  }
 
   log("");
   log("== Verdicts ==");
@@ -155,8 +211,83 @@ export async function runAudit(contractPath: string, ports: AuditPorts, options:
     formalization: formal?.formalization ?? null,
     properties: formal?.properties ?? [],
     proofs: result.proofs,
+    conflicts,
     transcript,
   };
+}
+
+/** Refinements per Conflict before a proof that still passes is withdrawn. */
+export const MAX_REFINEMENTS = 2;
+
+/**
+ * One Conflict: shows the Finding and the proof it contradicts, has an LLM word why they disagree,
+ * then asks the Rules agent for Refinements of the call the Finding went through and has the Referee
+ * re-check the old proof against each. The Rule is Broken whatever happens: a Finding outranks a proof.
+ */
+async function settleConflict(
+  ctx: AskContext,
+  ports: AuditPorts,
+  source: string,
+  rule: Rule,
+  formal: Formalization,
+  detected: DetectedConflict,
+): Promise<Conflict> {
+  const { log } = ctx;
+  const { finding, proof } = detected;
+  const property = formal.properties.find((p) => p.rule === rule.id);
+  const o = finding.outcome.observations;
+  const call = finding.scenario.call;
+  log("");
+  log(`== CONFLICT on ${rule.id} ==`);
+  log(`  The Referee reproduced a Finding against ${rule.id} and also accepted a proof of its Property.`);
+  log(`  Finding ${finding.scenario.id}, on the real contract in the sandbox:`);
+  log(`    call: ${call.as} -> ${call.method}(${JSON.stringify(call.args)}), deposit ${call.deposit}`);
+  log(`    before: ${JSON.stringify(o.before)}`);
+  log(`    after:  ${JSON.stringify(o.after)}`);
+  log(`    failed receipts: ${o.failedReceipts.length ? o.failedReceipts.join("; ") : "none"}`);
+  log(`    -> ${rule.id}'s Rule check is TRUE: the Rule is broken.`);
+  log(`  Proof, against the first Formalization (every call one step):`);
+  log(`    theorem ${theoremName(rule.id)} : ${property?.statement ?? "(missing)"}`);
+  for (const line of proof.body.trimEnd().split("\n")) log(`      ${line}`);
+  log(`    -> ${proof.reason}`);
+  const explanation = (await explainConflict(ctx, rule, detected, property)) ?? "(no explanation was worded)";
+  log(`  Why they disagree (worded by an LLM; it decides nothing): ${explanation}`);
+  log(`  Payout: the Prover's claim on ${rule.id}'s share is cancelled and passes to the Attacker. A Finding outranks a proof.`);
+
+  const refinements: Refinement[] = [];
+  let outcome: Conflict["outcome"] = "unresolved";
+  for (let n = 1; n <= MAX_REFINEMENTS; n++) {
+    log("");
+    log(`== Rules agent: Refinement ${n} of ${call.method}, for ${rule.id} ==`);
+    const earlier = refinements.map((r) => ({ formalization: r.formalization, properties: [r.property] }));
+    const refined = await refine(ctx, ports.toolchain, source, { rule, formal, proof: proof.body, finding, earlier });
+    if (!refined) {
+      log("  No Refinement that compiles: the Conflict stays unresolved.");
+      break;
+    }
+    const refinedProperty = refined.properties[0]!;
+    const same = refinedProperty.statement.trim() === property?.statement.trim();
+    log(`  Refinement ${n} compiles (${refined.formalization.split("\n").length} lines).`);
+    log(`  ${rule.id}: ${refinedProperty.statement}${same ? " (unchanged)" : " (restated)"}`);
+    const recheck = await recheckProof(ports.toolchain, refined.formalization, refinedProperty, proof);
+    refinements.push({ method: call.method, formalization: refined.formalization, property: refinedProperty, recheck });
+    log("");
+    log(`== Referee: re-check of the old proof against Refinement ${n} ==`);
+    if (!recheck.accepted) {
+      const lean = recheck.outcome?.errors.split("\n").find((l) => /error/.test(l));
+      log(`  ${rule.id}: the old proof NO LONGER PASSES (${recheck.reason}${lean ? `: ${lean.trim().slice(0, 200)}` : ""}).`);
+      log(`  The Conflict is resolved: the proof held only because the first Formalization made ${call.method} one step.`);
+      outcome = "resolved";
+      break;
+    }
+    log(`  ${rule.id}: the old proof STILL PASSES against Refinement ${n}.`);
+    if (n === MAX_REFINEMENTS) {
+      log(`  The proof still passes after ${MAX_REFINEMENTS} Refinements: it is withdrawn.`);
+      outcome = "withdrawn";
+    }
+  }
+  log(`  ${rule.id} ends Broken: a Finding outranks a proof.`);
+  return { rule: rule.id, finding: finding.scenario.id, proof, explanation, refinements, outcome };
 }
 
 function logCosts(log: (line: string) => void, tokens: Record<string, TokenUse>, budget: Budget): void {

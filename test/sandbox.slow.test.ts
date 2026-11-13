@@ -124,3 +124,22 @@ test("a malformed amount is reported with its path", { skip }, async () => {
   (bad.setup[1] as { deposit: string }).deposit = "1 NEAR";
   await assert.rejects(sandbox.runScenario(BUGGY, bad, rule1.check), /scenario\.setup\[1\]\.deposit is "1 NEAR"/);
 });
+
+test("a Rule check compares the signer with the account a view returns: anyone but the owner calling makes it true", { skip }, async () => {
+  const check: Rule["check"] = {
+    methods: ["set_deposits_paused"],
+    slots: [{ name: "owner", kind: "view", describe: "the stored owner", bind: { view: { method: "owner", args: {} } } }],
+    condition: { compare: "!=", left: { account: "$caller" }, right: { slot: "owner", when: "before" } },
+  };
+  const call = (as: string): Scenario => ({
+    id: `S-${as}`,
+    rule: "R4",
+    bugClass: "a privileged method with no access check",
+    setup: [{ action: "createAccount", account: "mallory", balance: (5n * NEAR).toString() }],
+    call: { as, method: "set_deposits_paused", args: { paused: true }, deposit: "0", gas: "30000000000000" },
+  });
+  const byOwner = await sandbox.runScenario(BUGGY, call("owner"), check);
+  assert.equal(byOwner.observations.before.views.owner, "owner");
+  assert.equal(byOwner.ruleCheckTrue, false, "the owner pausing is not a break");
+  assert.equal((await sandbox.runScenario(BUGGY, call("mallory"), check)).ruleCheckTrue, true);
+});

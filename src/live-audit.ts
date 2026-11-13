@@ -2,6 +2,7 @@
 // runs the Audit runner through the recording gateway and a recording sandbox toolchain, and writes the
 // Recording, the results and every Scenario (in a form that can be re-run) to a folder.
 
+import { appendFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type AuditOptions, runAudit } from "./audit.ts";
@@ -41,6 +42,8 @@ export interface LiveAuditRequest {
   llm?: (settings: Settings) => LlmGateway;
   /** Replaces the local sandbox (tests). */
   toolchain?: Toolchain;
+  /** Called with each transcript line as it happens (the command prints them). */
+  onLine?: (line: string) => void;
 }
 
 export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditResult | null; recordingPath: string; notes: string[] }> {
@@ -48,9 +51,11 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
   const settings = typeof req.settings === "object" ? req.settings : await loadSettings(req.settings);
   const toolchain = new RecordingToolchain(req.toolchain ?? localToolchain());
   const llm = new RecordingGateway(req.llm ? req.llm(settings) : new LiveGateway(settings));
-  const options: AuditOptions = { spendCapUsd: settings.spendCapUsd, prover: true };
+  const options: AuditOptions = { spendCapUsd: settings.spendCapUsd, prover: true, conflicts: true };
 
   await mkdir(req.outDir, { recursive: true });
+  const progressPath = join(req.outDir, "progress.txt");
+  await writeFile(progressPath, "");
   const recordingPath = join(req.outDir, "recording.json");
   const saveRecording = () =>
     writeFile(
@@ -72,7 +77,14 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
     result = await runAudit(
       req.contractPath,
       { llm, toolchain, payer: new FakePayer(), source: { read: async () => source } },
-      options,
+      {
+        ...options,
+        // Each line is appended to progress.txt as it happens, so a long Audit can be watched.
+        onLine: (line) => {
+          appendFileSync(progressPath, `${line}\n`);
+          req.onLine?.(line);
+        },
+      },
     );
   } finally {
     // Saved even when the Audit fails part-way, so the money spent is not lost.
@@ -92,6 +104,23 @@ export async function liveAudit(req: LiveAuditRequest): Promise<{ result: AuditR
     const header = `-- ${proof.accepted ? "ACCEPTED" : "REJECTED"} by the Referee: ${proof.reason}\n`;
     const file = assembleLeanFile(result.formalization, property, proof.body, "nearwatch-end");
     await writeFile(join(req.outDir, "proofs", `${theoremName(proof.rule)}.lean`), header + file);
+  }
+  if (result.conflicts.length > 0) {
+    await writeFile(join(req.outDir, "conflicts.json"), `${JSON.stringify(result.conflicts, null, 2)}\n`);
+    await mkdir(join(req.outDir, "refinements"), { recursive: true });
+  }
+  for (const c of result.conflicts) {
+    for (const [i, r] of c.refinements.entries()) {
+      const name = `${c.rule}-refinement-${i + 1}`;
+      await writeFile(join(req.outDir, "refinements", `${name}.lean`), `${r.formalization.trimEnd()}\n`);
+      // The file the Referee re-checked: the Refinement, the Property, and the old proof, with the outcome on top.
+      const errors = r.recheck.outcome?.errors ? `/- Lean's errors:\n${r.recheck.outcome.errors.replaceAll("-/", "- /")}\n-/\n` : "";
+      const header = `-- Re-check of the old proof of ${c.rule} against Refinement ${i + 1}: ${r.recheck.accepted ? "STILL PASSES" : "NO LONGER PASSES"} (${r.recheck.reason})\n${errors}`;
+      await writeFile(
+        join(req.outDir, "refinements", `${name}-recheck.lean`),
+        header + assembleLeanFile(r.formalization, r.property, r.recheck.body, "nearwatch-end"),
+      );
+    }
   }
   const scenarios = [...result.findings.map((f) => f.scenario), ...result.leads.flatMap((l) => (l.scenario ? [l.scenario] : []))];
   const written = new Set<string>();

@@ -11,6 +11,8 @@ const here = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
 
 /** The first Formalization of the demo vault: every call is one step (docs/adr/0001). */
 export const FORMALIZATION = here("vault-first.lean");
+/** A Refinement of it: withdraw split into a start step and a resolve step with a success and a failure branch. */
+export const REFINED = here("vault-refined.lean");
 /** The same Formalization with an extra axiom a proof can lean on. */
 export const FORMALIZATION_WITH_AXIOM = `${FORMALIZATION}\n${here("axiom-extra.lean")}`;
 
@@ -32,6 +34,10 @@ export const CASES = {
   "added-axiom": { rule: "R1", formalization: FORMALIZATION_WITH_AXIOM, body: here("proof-added-axiom.lean") },
   restated: { rule: "R1", formalization: FORMALIZATION, body: here("proof-restated.lean") },
   "changed-goal": { rule: "R1", formalization: FORMALIZATION, body: here("proof-changed-goal.lean") },
+  /** The proof Lean accepts against the first Formalization, re-checked against the Refinement. */
+  "after-refinement": { rule: "R1", formalization: REFINED, body: here("proof-R1.lean") },
+  /** R1's statement against the Refinement, with a placeholder proof: does the Refinement compile? */
+  "refined-statement": { rule: "R1", formalization: REFINED, body: "sorry" },
 } satisfies Record<string, LeanCase>;
 
 export type CaseName = keyof typeof CASES;

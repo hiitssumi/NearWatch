@@ -22,9 +22,15 @@ export interface ObservationSlot {
   bind: SlotBinding;
 }
 
+/**
+ * `account` is an account id: a reference to the call under test ("$caller", "$contract", "$arg:<name>")
+ * or a literal account name. It may only be compared, with "==" or "!=", with another account or with a
+ * view slot whose view returns an account, for example to say that the signer is not the owner.
+ */
 export type Expr =
   | { slot: string; when: "before" | "after" }
   | { number: string }
+  | { account: string }
   | { op: "add" | "sub"; left: Expr; right: Expr };
 
 export type Condition =
@@ -154,7 +160,39 @@ export interface AuditResult {
   properties: Property[];
   /** The Referee's check of each proof the Prover submitted. */
   proofs: ProofCheck[];
+  /** Every Conflict, at most one per Rule, with the Refinements it went through. */
+  conflicts: Conflict[];
   transcript: string[];
+}
+
+// ---- Conflicts and Refinements ----
+
+/** A Finding against a Rule whose Property also has a proof the Referee accepted. */
+export interface Conflict {
+  rule: string;
+  /** The Finding's Scenario id. */
+  finding: string;
+  /** The proof the Referee accepted against the first Formalization. */
+  proof: ProofCheck;
+  /** Why the two disagree, worded by an LLM. It decides nothing. */
+  explanation: string;
+  refinements: Refinement[];
+  /**
+   * resolved: the old proof fails against a Refinement. withdrawn: it still passes after the last one
+   * allowed. unresolved: the Rules agent wrote no Refinement that compiles. The Rule is Broken in every case.
+   */
+  outcome: "resolved" | "withdrawn" | "unresolved";
+}
+
+/** A Formalization that splits one call into a start step and a resolve step, written after a Conflict. */
+export interface Refinement {
+  /** The call the Finding went through, which this Refinement splits. */
+  method: string;
+  formalization: string;
+  /** The Rule's Property, restated for the Refinement only as much as the new steps require. */
+  property: Property;
+  /** The Referee's re-check of the old proof against this Refinement. */
+  recheck: ProofCheck;
 }
 
 // ---- Properties and proofs ----

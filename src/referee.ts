@@ -1,8 +1,17 @@
 // The Referee is ordinary code: no LLM takes part in its decisions.
 
-import type { Finding, Lead, ProofCheck, ProofSubmission, Rule, Scenario, Verdict } from "./domain.ts";
+import { type AskContext, askStructured } from "./agents/ask.ts";
+import type { Finding, Lead, Property, ProofCheck, ProofSubmission, Rule, Scenario, Verdict } from "./domain.ts";
 import type { Toolchain } from "./ports.ts";
 import { checkProof } from "./proof-rules.ts";
+import { conflictExplanation } from "./schemas.ts";
+
+/** A Rule with both a reproduced Finding and an accepted proof. */
+export interface DetectedConflict {
+  rule: string;
+  finding: Finding;
+  proof: ProofCheck;
+}
 
 export interface RefereeResult {
   verdicts: Record<string, Verdict>;
@@ -10,6 +19,8 @@ export interface RefereeResult {
   leads: Lead[];
   /** One entry per submitted proof, accepted or rejected with a reason. */
   proofs: ProofCheck[];
+  /** Every Rule with a reproduced Finding and an accepted proof, in Rule order. */
+  conflicts: DetectedConflict[];
 }
 
 /**
@@ -73,5 +84,38 @@ export async function referee(
   const proven = new Set(proofs.filter((p) => p.accepted).map((p) => p.rule));
   const verdict = (id: string): Verdict => (broken.has(id) ? "Broken" : proven.has(id) ? "Proven" : "Unproven");
   const verdicts = Object.fromEntries(rules.map((r): [string, Verdict] => [r.id, verdict(r.id)]));
-  return { verdicts, findings, leads, proofs };
+  const conflicts = rules.flatMap((r): DetectedConflict[] => {
+    const finding = findings.find((f) => f.scenario.rule === r.id);
+    const proof = proofs.find((p) => p.rule === r.id && p.accepted);
+    return finding && proof ? [{ rule: r.id, finding, proof }] : [];
+  });
+  return { verdicts, findings, leads, proofs, conflicts };
+}
+
+/** The Referee's re-check of a proof it accepted, against a Refinement. The same proof rules apply. */
+export const recheckProof = (toolchain: Pick<Toolchain, "checkLean">, formalization: string, property: Property, proof: ProofCheck): Promise<ProofCheck> =>
+  checkProof(toolchain, formalization, property, { rule: proof.rule, body: proof.body });
+
+/**
+ * Asks an LLM to word why a Finding and a proof disagree. The wording decides nothing: the Conflict, the
+ * Refinement and the verdict are all settled by code. Null when there is no answer (for example at the cap).
+ */
+export async function explainConflict(ctx: AskContext, rule: Rule, conflict: DetectedConflict, property: Property | undefined): Promise<string | null> {
+  const o = conflict.finding.outcome.observations;
+  const answer = await askStructured(
+    ctx,
+    "referee",
+    `A NEAR contract has a Rule. ${rule.id}: ${rule.text}
+On the real contract, in a sandbox, this Scenario broke it (the Rule check was true):
+  call: ${JSON.stringify(conflict.finding.scenario.call)}
+  before: ${JSON.stringify(o.before)}
+  after: ${JSON.stringify(o.after)}
+  failed receipts: ${o.failedReceipts.length ? o.failedReceipts.join("; ") : "none"}
+Yet Lean accepted a proof of the Rule's Property against a model of the contract in which every call is one indivisible step:
+  Property: ${property?.statement ?? "(missing)"}
+In two or three plain sentences for a contract owner, say what the Scenario shows the real contract doing that the model
+does not allow. Do not judge which is right: the Finding stands either way. Answer with JSON only: {"explanation":"<text>"}`,
+    conflictExplanation,
+  );
+  return answer?.explanation.trim() ?? null;
 }

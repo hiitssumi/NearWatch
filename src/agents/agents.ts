@@ -1,10 +1,11 @@
 // The Scout and the Rules agent (the Attacker is in attacker.ts). Each is a function from typed
 // inputs to typed outputs; the prompt wording is a first draft and is not tested.
 
-import type { Property, Rule, ScoutMap } from "../domain.ts";
+import type { Finding, Property, Rule, ScoutMap } from "../domain.ts";
 import type { Toolchain } from "../ports.ts";
 import { screenLeanText } from "../proof-rules.ts";
-import { formalizationAnswer, rulesAnswer, scoutMap } from "../schemas.ts";
+import { formalizationAnswer, refinementAnswer, rulesAnswer, scoutMap } from "../schemas.ts";
+import type { Check } from "../validate.ts";
 import { type AskContext, askStructured } from "./ask.ts";
 import { BUG_CLASSES } from "./attacker.ts";
 
@@ -50,13 +51,18 @@ A Rule check has:
 - "condition": built only from these forms:
   {"compare":"<"|"<="|"=="|"!="|">="|">","left":<expr>,"right":<expr>}  (use these symbols, never words like "lt")
   {"all":[<condition>,...]}  {"any":[<condition>,...]}
-  where <expr> is {"slot":<slot name>,"when":"before"|"after"}, {"number":"<decimal integer string>"}, or {"op":"add"|"sub","left":<expr>,"right":<expr>}.
+  where <expr> is {"slot":<slot name>,"when":"before"|"after"}, {"number":"<decimal integer string>"}, or {"op":"add"|"sub","left":<expr>,"right":<expr>},
+  or {"account":<a reference such as "$caller", or an account name>}, which may only be compared with "==" or "!=" against
+  another account or a view slot whose view returns an account.
   Every slot the condition uses must be declared in "slots". Booleans read as 1 (true) and 0 (false).
 
 A Rule check must stay FALSE whenever the contract behaves correctly, whatever setup and call arguments the attacker picks:
 - Bind each slot to exactly the account or value the Rule is about, through the references above.
 - A Rule that applies only in some situation (for example while deposits are paused) must test that situation in the
   condition itself (for example, the paused flag is true before the call).
+- A Rule about who may call a method must test the signer in the condition, or the check also turns true when the
+  account that is allowed makes the call. Read the allowed account through a view slot and compare, for example
+  {"compare":"!=","left":{"account":"$caller"},"right":{"slot":"owner","when":"before"}}.
 - Allow for gas wherever a NEAR balance is compared: the signer of the call pays gas even when the call fails, and the
   signer may also be the receiver it names. Never compare a NEAR balance with "==" or "!="; use "<" or ">" with an allowance.
 The attacker will try these bug classes. Write each check so that it turns true if any of them happens to the money its Rule
@@ -148,16 +154,31 @@ ${JSON.stringify(map, null, 2)}
 Contract source:
 ${source}`;
 
-  const check = formalizationAnswer(rules.map((r) => r.id));
+  const answer = await untilItCompiles(ctx, toolchain, prompt, formalizationAnswer(rules.map((r) => r.id)), (a) => a, "every Property");
+  if (answer) ctx.log(`  Formalization compiles (${answer.formalization.split("\n").length} lines), with ${answer.properties.length} Properties.`);
+  else ctx.log(`  The Rules agent wrote no Formalization that compiles after ${FORMALIZATION_RETRIES} retries; there is nothing to prove.`);
+  return answer;
+}
+
+/**
+ * Asks the Rules agent until its Formalization and statements compile, giving it Lean's errors each
+ * time, up to FORMALIZATION_RETRIES retries. Null when it never wrote one that compiles.
+ */
+async function untilItCompiles<T>(
+  ctx: AskContext,
+  toolchain: Pick<Toolchain, "checkLean">,
+  prompt: string,
+  check: Check<T>,
+  toFormalization: (answer: T) => Formalization,
+  what: string,
+): Promise<Formalization | null> {
   let current = prompt;
   for (let attempt = 0; attempt <= FORMALIZATION_RETRIES; attempt++) {
     const answer = await askStructured(ctx, "rules", current, check);
     if (!answer) return null;
-    const problem = await compileProblem(toolchain, answer);
-    if (!problem) {
-      ctx.log(`  Formalization compiles (${answer.formalization.split("\n").length} lines), with ${answer.properties.length} Properties.`);
-      return answer;
-    }
+    const f = toFormalization(answer);
+    const problem = await compileProblem(toolchain, f);
+    if (!problem) return f;
     ctx.log(`  Formalization attempt ${attempt + 1} does not compile: ${problem.split("\n")[0]}`);
     current = `${prompt}
 
@@ -165,10 +186,84 @@ Your previous answer:
 ${JSON.stringify(answer)}
 
 It was rejected: ${problem}
-Fix it and answer again with the whole Formalization and every Property, as JSON only.`;
+Fix it and answer again with the whole Formalization and ${what}, as JSON only.`;
   }
-  ctx.log(`  The Rules agent wrote no Formalization that compiles after ${FORMALIZATION_RETRIES} retries; there is nothing to prove.`);
   return null;
+}
+
+/** What the Rules agent is told about a Conflict. */
+export interface ConflictBrief {
+  rule: Rule;
+  /** The first Formalization and its Property for this Rule, against which Lean accepted `proof`. */
+  formal: Formalization;
+  proof: string;
+  finding: Finding;
+  /** Earlier Refinements of this Conflict, each of which the old proof still passed. */
+  earlier: Formalization[];
+}
+
+/**
+ * A Refinement (docs/adr/0001): the Rules agent's Formalization once more, with only the call the Finding
+ * went through split into a start step and a resolve step with a success and a failure branch, and the
+ * Rule's Property restated only as much as the new steps require. It must compile, like the first one.
+ */
+export async function refine(ctx: AskContext, toolchain: Pick<Toolchain, "checkLean">, source: string, brief: ConflictBrief): Promise<Formalization | null> {
+  const { rule, formal, proof, finding, earlier } = brief;
+  const method = finding.scenario.call.method;
+  const property = formal.properties.find((p) => p.rule === rule.id)!;
+  const o = finding.outcome.observations;
+  const latest = earlier.at(-1);
+  const prompt = `You are the Rules agent. There is a Conflict on ${rule.id}: ${rule.text}
+The Referee ran a Scenario against the real contract in the sandbox and it broke ${rule.id} (a Finding), yet Lean accepted a
+proof of ${rule.id}'s Property against your Formalization. So your Formalization does not match the contract.
+
+The Finding, ${finding.scenario.id}:
+  setup: ${JSON.stringify(finding.scenario.setup)}
+  call under test: ${JSON.stringify(finding.scenario.call)}
+  observed before: ${JSON.stringify(o.before)}
+  observed after: ${JSON.stringify(o.after)}
+  failed receipts: ${o.failedReceipts.length ? o.failedReceipts.join("; ") : "none"}
+
+Your Formalization, in which every call is one indivisible step:
+${formal.formalization.trimEnd()}
+
+${rule.id}'s Property: ${property.statement}
+The proof Lean accepted:
+${proof}
+${
+  latest
+    ? `
+Your previous Refinement (number ${earlier.length}) still let that proof pass, so it does not yet show what the Finding shows:
+${latest.formalization.trimEnd()}
+Property: ${latest.properties[0]!.statement}
+`
+    : ""
+}
+Write a Refinement: the same Formalization with ONLY the call "${method}" made more detailed.
+- Replace its one step with a start step and a resolve step. The start step is what the call does when it runs, up to
+  scheduling its transfer or cross-contract call; record what it scheduled in State (for example the pending transfers).
+  The resolve step settles one pending transfer and has two branches: success (the money arrives where it was sent) and
+  failure (it does not arrive and comes back to the contract, and the contract does only what its code does on failure:
+  if it has no callback, its records do not change).
+- Make the start and the resolve each a constructor of Call, and keep "def step (s : State) : Call → State" as the one step
+  function. Keep every other call, field and definition as it is. Model what the code does; do not fix the contract.
+- Restate ${rule.id}'s Property only as much as the new steps require (unchanged, if it still compiles). It must still say
+  what the Rule says, and must not be weakened.
+Write only plain definitions (abbrev, def, structure, inductive), as before. Lean 4.35, no imports, no Mathlib.
+
+Answer with JSON only: {"formalization":"<the whole refined Formalization>","statement":"<${rule.id}'s Property>"}
+
+Contract source:
+${source}`;
+
+  return untilItCompiles(
+    ctx,
+    toolchain,
+    prompt,
+    refinementAnswer,
+    (a) => ({ formalization: a.formalization, properties: [{ rule: rule.id, statement: a.statement }] }),
+    `${rule.id}'s Property`,
+  );
 }
 
 /** Why a Formalization cannot be used, or null. Each statement is compiled with a placeholder proof. */

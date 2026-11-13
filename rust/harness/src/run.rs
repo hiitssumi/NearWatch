@@ -40,6 +40,9 @@ enum Binding {
 /// Checks the whole request before the sandbox starts, so a malformed Scenario costs nothing.
 fn prepare(req: &Request) -> Result<(Vec<Step>, Vec<(String, Binding)>), HarnessError> {
     check::validate(&req.check, &req.scenario)?;
+    for account in check::account_refs(&req.check) {
+        resolve(&account, req, "condition")?;
+    }
     let call = &req.scenario.call;
     let call_action = SandboxAction::Call {
         signer: call.signer.clone(),
@@ -391,7 +394,7 @@ pub async fn run(req: Request) -> Result<ScenarioOutcome, HarnessError> {
     }
     let after = sb.observe(&bindings, "after").await?;
 
-    let rule_check_true = check::evaluate(&req.check, &before, &after)?;
+    let rule_check_true = check::evaluate(&req.check, &before, &after, &|a| resolve(a, &req, "condition"))?;
     Ok(ScenarioOutcome {
         observations: Observations { before, after, failed_receipts: sb.failed },
         rule_check_true,

@@ -9,7 +9,7 @@
 import type { Lead, Rule, SandboxSetup, Scenario, ScenarioOutcome, ScoutMap } from "../domain.ts";
 import type { Toolchain } from "../ports.ts";
 import { type AttackerRound, attackerRound } from "../schemas.ts";
-import { type AskContext, askStructured } from "./ask.ts";
+import { type AskContext, askStructured, capReached } from "./ask.ts";
 
 export const BUG_CLASSES = [
   "state not restored when a cross-contract call or transfer fails",
@@ -96,7 +96,10 @@ Bug classes still open against ${rule.id} (attempts left in brackets):
 ${open.map((c) => `${c}. ${BUG_CLASSES[c - 1]} [${left(c)}]`).join("\n")}
 
 For each open bug class, either give ONE Scenario that tries it, or skip it with a short reason why it cannot apply to this Rule and contract.
-A skipped class is closed. A Scenario that does not break the Rule leaves its class open until its attempts run out.
+A skipped class is closed. On NEAR a transfer or cross-contract call a method schedules runs later, in its own receipt, after
+the method's state changes are saved; if it fails (for example because the receiving account does not exist), only a callback
+can undo those changes. So a method that changes state and schedules a transfer with no callback is a reason to TRY class 1,
+not to skip it. A Scenario that does not break the Rule leaves its class open until its attempts run out.
 Answer with JSON only:
 {"attempts":[{"bugClass":<number>,"setup":[...],"call":{...}}],"skip":[{"bugClass":<number>,"reason":"<why>"}]}
 
@@ -133,7 +136,7 @@ export async function attacker(
   let answered = false;
 
   for (const rule of rules) {
-    if (ctx.budget?.capReached) {
+    if (capReached(ctx)) {
       leads.push({ rule: rule.id, reason: "not attacked: the spend cap was reached" });
       ctx.log(`  ${rule.id}: not attacked (spend cap reached)`);
       continue;

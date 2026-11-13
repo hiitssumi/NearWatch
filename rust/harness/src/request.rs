@@ -153,6 +153,9 @@ pub enum When {
 pub enum Expr {
     Slot { slot: String, when: When },
     Number { number: String },
+    /// An account id: a reference to the call under test ("$caller", "$contract", "$arg:<name>") or a
+    /// literal name. Compared only with "==" or "!=", against another account or a view returning one.
+    Account { account: String },
     Op { op: ArithOp, left: Box<Expr>, right: Box<Expr> },
 }
 

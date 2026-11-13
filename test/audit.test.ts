@@ -37,14 +37,17 @@ test("a replay asked for an exchange that is not in the Recording fails with a c
   const r = await loadRecording(HAND_MADE);
   r.exchanges = r.exchanges.filter((e) => e.agent !== "attacker");
   await assert.rejects(audit(r), {
-    message: 'Replay asked for LLM exchange #3 (agent "attacker"), but the Recording holds only 2 exchange(s).',
+    message: 'Replay asked for exchange #1 of agent "attacker", but the Recording holds only 0 for that agent.',
   });
 });
 
-test("a replay whose next exchange belongs to another agent fails with a clear message", async () => {
+test("each agent replays its own exchanges in order, so agents that ran side by side replay whatever order their calls finished in", async () => {
   const r = await loadRecording(HAND_MADE);
-  r.exchanges = [r.exchanges[1]!, r.exchanges[0]!, r.exchanges[2]!];
-  await assert.rejects(audit(r), /exchange #1 from agent "scout", but the Recording has agent "rules"/);
+  const inOrder = await audit(r);
+  r.exchanges = [r.exchanges[2]!, r.exchanges[1]!, r.exchanges[0]!, ...r.exchanges.slice(3)];
+  const shuffled = await audit(r);
+  assert.deepEqual(shuffled.verdicts, inOrder.verdicts);
+  assert.deepEqual(shuffled.transcript, inOrder.transcript);
 });
 
 test("an invalid agent answer is retried, and an agent that never answers validly produces nothing", async () => {

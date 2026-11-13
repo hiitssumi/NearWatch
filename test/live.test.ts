@@ -12,8 +12,8 @@ import { type FetchFn, LiveGateway, LlmCallError } from "../src/llm/live.ts";
 import type { LlmAnswer, LlmGateway } from "../src/ports.ts";
 import { FakePayer, loadRecording, type Recording, ReplayToolchain, replayPorts } from "../src/replay/recording.ts";
 import { parseSettings, type Settings, SettingsError } from "../src/settings.ts";
-import { formalAnswer, lean, PROOF_R1, PROOF_R2, proofAnswer } from "./hand-made.ts";
-import { FORMALIZATION } from "./lean/cases.ts";
+import { formalAnswer, lean, PROOF_R1, PROOF_R2, proofAnswer, refinementAnswer, storedLean } from "./hand-made.ts";
+import { FORMALIZATION, REFINED } from "./lean/cases.ts";
 
 const fixture = (p: string) => new URL(`fixtures/${p}`, import.meta.url).pathname;
 const HAND_MADE = new URL("../recordings/hand-made.json", import.meta.url).pathname;
@@ -30,17 +30,21 @@ const rawSettings = () => ({
 });
 const settings = (over: Partial<Settings> = {}): Settings => ({ ...parseSettings(rawSettings()), ...over });
 
-/** A scripted gateway that counts its calls. */
+/**
+ * A scripted gateway that counts its calls. Each agent gets its own answers in order, as in replay, since
+ * the Attacker and the Prover's side ask side by side.
+ */
 class Scripted implements LlmGateway {
   calls: AgentName[] = [];
-  private readonly answers: LlmAnswer[];
-  constructor(answers: LlmAnswer[]) {
+  private readonly answers: (LlmAnswer & { agent: AgentName })[];
+  constructor(answers: (LlmAnswer & { agent: AgentName })[]) {
     this.answers = [...answers];
   }
   async ask(agent: AgentName): Promise<LlmAnswer> {
     this.calls.push(agent);
-    const a = this.answers.shift();
-    if (!a) throw new Error(`no scripted answer for ${agent}`);
+    const i = this.answers.findIndex((a) => a.agent === agent);
+    if (i < 0) throw new Error(`no scripted answer for ${agent}`);
+    const [{ agent: _, ...a }] = this.answers.splice(i, 1);
     return a;
   }
 }
@@ -197,31 +201,36 @@ async function handMade() {
   const r = await loadRecording(HAND_MADE);
   const [scout, rules, attackR1, attackR2] = r.exchanges.map((e) => e.answer);
   const [attackerRun, refereeRun] = r.toolchain;
-  // The Lean checks in the order a live run makes them: statements, then the Prover's, then the Referee's.
+  // In the order the side-by-side part happens to finish: replay reads Scenario runs and Lean checks each in its own order.
   const toolchain = new ReplayToolchain([
     lean("R1", "statement"),
-    lean("R2", "statement"),
     attackerRun!,
+    lean("R2", "statement"),
     lean("R1", "ok"),
     lean("R2", "ok"),
     refereeRun!,
     lean("R1", "ok"),
     lean("R2", "ok"),
+    storedLean("refined-statement"),
+    storedLean("after-refinement"),
   ]);
   return { scout: scout!, rules: rules!, attackR1: attackR1!, attackR2: attackR2!, toolchain };
 }
 
-test("a live run records every exchange and sandbox run, writes its Scenarios, and its Recording replays to the same result", async () => {
+test("a live run of the buggy vault: the Attacker and the Prover side by side, a Conflict on R1, one Refinement, the old proof failing against it; the Recording replays to the same result", async () => {
   const { scout, rules, attackR1, attackR2, toolchain } = await handMade();
+  const glm = { model: "glm" };
   const fake = new Scripted([
-    { answer: "not json", tokens: { input: 900, output: 10 }, usd: 0.002, model: "glm" },
-    { answer: scout, tokens: { input: 1000, output: 150 }, usd: 0.003, model: "glm" },
-    { answer: rules, tokens: { input: 1500, output: 400 }, usd: 0.005, model: "glm" },
-    { answer: formalAnswer(), tokens: { input: 2000, output: 600 }, usd: 0.007, model: "glm" },
-    { answer: attackR1, tokens: { input: 2600, output: 380 }, usd: 0.0012, model: "ds" },
-    { answer: attackR2, tokens: { input: 2500, output: 260 }, usd: 0.0011, model: "ds" },
-    { answer: proofAnswer(PROOF_R1), tokens: { input: 3000, output: 500 }, usd: 0.022, model: "opus" },
-    { answer: proofAnswer(PROOF_R2), tokens: { input: 3000, output: 300 }, usd: 0.018, model: "opus" },
+    { agent: "scout", answer: "not json", tokens: { input: 900, output: 10 }, usd: 0.002, ...glm },
+    { agent: "scout", answer: scout, tokens: { input: 1000, output: 150 }, usd: 0.003, ...glm },
+    { agent: "rules", answer: rules, tokens: { input: 1500, output: 400 }, usd: 0.005, ...glm },
+    { agent: "rules", answer: formalAnswer(), tokens: { input: 2000, output: 600 }, usd: 0.007, ...glm },
+    { agent: "attacker", answer: attackR1, tokens: { input: 2600, output: 380 }, usd: 0.0012, model: "ds" },
+    { agent: "attacker", answer: attackR2, tokens: { input: 2500, output: 260 }, usd: 0.0011, model: "ds" },
+    { agent: "prover", answer: proofAnswer(PROOF_R1), tokens: { input: 3000, output: 500 }, usd: 0.022, model: "opus" },
+    { agent: "prover", answer: proofAnswer(PROOF_R2), tokens: { input: 3000, output: 300 }, usd: 0.018, model: "opus" },
+    { agent: "referee", answer: JSON.stringify({ explanation: EXPLANATION }), tokens: { input: 800, output: 90 }, usd: 0.002, ...glm },
+    { agent: "rules", answer: refinementAnswer(), tokens: { input: 4000, output: 900 }, usd: 0.012, ...glm },
   ]);
   const outDir = await tempDir();
   const { result, recordingPath, notes } = await liveAudit({
@@ -232,28 +241,79 @@ test("a live run records every exchange and sandbox run, writes its Scenarios, a
     toolchain,
   });
 
-  assert.deepEqual(fake.calls, ["scout", "scout", "rules", "rules", "attacker", "attacker", "prover", "prover"]);
+  const count = (agent: AgentName) => fake.calls.filter((a) => a === agent).length;
+  assert.deepEqual(
+    ["scout", "rules", "attacker", "prover", "referee"].map((a) => count(a as AgentName)),
+    [2, 3, 2, 2, 1],
+  );
+  assert.deepEqual(fake.calls.slice(0, 3), ["scout", "scout", "rules"], "the Scout, then the Rules agent, before anything runs side by side");
+  assert.deepEqual(fake.calls.slice(-2), ["referee", "rules"], "after the Referee: the explanation, then the Refinement");
+
   assert.deepEqual(result!.verdicts, { R1: "Broken", R2: "Proven" });
   assert.deepEqual(result!.scoutMap?.moneyMethods, ["deposit", "withdraw"]);
   assert.match(result!.scoutMap!.standingNote, /deployed account/);
   assert.deepEqual(result!.rules.map((r) => r.id), ["R1", "R2"]);
-  assert.ok(result!.transcript.includes("  Total spend: $0.0593 (cap $5.00)"));
+  assert.ok(result!.transcript.includes("  Total spend: $0.0733 (cap $5.00)"));
+
+  // One Conflict, one Refinement, the old proof failing against it.
+  assert.equal(result!.conflicts.length, 1);
+  const [c] = result!.conflicts;
+  assert.equal(c!.rule, "R1");
+  assert.equal(c!.finding, "S1");
+  assert.equal(c!.outcome, "resolved");
+  assert.equal(c!.explanation, EXPLANATION);
+  assert.equal(c!.refinements.length, 1);
+  assert.equal(c!.refinements[0]!.method, "withdraw");
+  assert.equal(c!.refinements[0]!.recheck.accepted, false);
+  const t = result!.transcript;
+  const at = (line: string) => t.findIndex((l) => l.includes(line));
+  for (const line of [
+    "== CONFLICT on R1 ==",
+    "Finding S1, on the real contract in the sandbox:",
+    "Proof, against the first Formalization (every call one step):",
+    `Why they disagree (worded by an LLM; it decides nothing): ${EXPLANATION}`,
+    "Payout: the Prover's claim on R1's share is cancelled and passes to the Attacker.",
+    "== Rules agent: Refinement 1 of withdraw, for R1 ==",
+    "== Referee: re-check of the old proof against Refinement 1 ==",
+    "R1: the old proof NO LONGER PASSES",
+    "The Conflict is resolved",
+    "R1 ends Broken: a Finding outranks a proof.",
+    "== Verdicts ==",
+  ]) {
+    assert.ok(at(line) >= 0, `the transcript shows: ${line}`);
+  }
+  assert.ok(at("Finding S1, on the real") < at("Proof, against the first") && at("Proof, against the first") < at("Why they disagree"));
+  assert.ok(at("== Attacker ==") < at("== Prover ==") && at("== Prover ==") < at("== Referee =="), "each side's block printed in a fixed order");
+  assert.ok(t.some((l) => l.includes("The Attacker and the Prover run side by side")));
 
   const recording = await loadRecording(recordingPath);
-  assert.equal(recording.exchanges.length, 8);
+  assert.equal(recording.exchanges.length, 10);
   assert.ok(recording.exchanges.every((e) => typeof e.ms === "number"), "each exchange's time is recorded");
   assert.equal(recording.exchanges[0]!.model, "glm");
   assert.match(recording.exchanges[1]!.prompt!, /previous answer was invalid/);
-  assert.deepEqual(
-    recording.toolchain.map((t) => (t.op === "runScenario" ? t.scenario : t.property)),
-    ["R1", "R2", "S1", "R1", "R2", "S1", "R1", "R2"],
-    "statements, the Attacker's run, the Prover's checks, then the Referee's runs and checks",
-  );
+  const refinePrompt = recording.exchanges.at(-1)!.prompt!;
+  assert.match(refinePrompt, /There is a Conflict on R1/);
+  assert.match(refinePrompt, /ONLY the call "withdraw"/);
+  assert.match(refinePrompt, /start step and a resolve step/);
+  assert.ok(refinePrompt.includes(PROOF_R1.trimEnd()), "the Rules agent sees the proof the Finding contradicts");
+  const kinds = (op: "runScenario" | "checkLean") =>
+    recording.toolchain.filter((t) => t.op === op).map((t) => (t.op === "runScenario" ? t.scenario : t.property));
+  assert.deepEqual(kinds("runScenario"), ["S1", "S1"], "the Attacker's run, then the Referee's");
+  assert.deepEqual(kinds("checkLean"), ["R1", "R2", "R1", "R2", "R1", "R2", "R1", "R1"], "statements, the Prover's, the Referee's, then the Refinement's statement and the re-check");
   assert.ok(recording.toolchain.every((t) => t.op !== "checkLean" || typeof t.outcome.ms === "number"), "each Lean check's time is recorded");
   assert.equal(recording.settings.stopAfter, undefined);
   assert.equal(recording.settings.prover, true);
+  assert.equal(recording.settings.conflicts, true);
+
+  // Each Formalization and each re-check outcome is written to the Audit's folder.
   assert.equal(await readFile(join(outDir, "formalization.lean"), "utf8"), `${FORMALIZATION.trimEnd()}\n`);
   assert.match(await readFile(join(outDir, "proofs", "property_R2.lean"), "utf8"), /^-- ACCEPTED by the Referee[^\n]*\n[\s\S]*theorem property_R2 :/);
+  assert.equal(await readFile(join(outDir, "refinements", "R1-refinement-1.lean"), "utf8"), `${REFINED.trimEnd()}\n`);
+  const recheck = await readFile(join(outDir, "refinements", "R1-refinement-1-recheck.lean"), "utf8");
+  assert.match(recheck, /^-- Re-check of the old proof of R1 against Refinement 1: NO LONGER PASSES/);
+  assert.match(recheck, /Invalid alternative name `withdraw`/);
+  assert.match(recheck, /theorem property_R1 :/);
+  assert.equal(JSON.parse(await readFile(join(outDir, "conflicts.json"), "utf8"))[0].outcome, "resolved");
 
   const file = JSON.parse(await readFile(join(outDir, "scenarios", "S1.json"), "utf8"));
   assert.equal(file.contractPath, fixture("vault.rs"));
@@ -261,12 +321,24 @@ test("a live run records every exchange and sandbox run, writes its Scenarios, a
   assert.equal(file.scenario.id, "S1");
   assert.match(notes[0]!, /npm run scenario -- <file>/);
   assert.match(await readFile(join(outDir, "transcript.txt"), "utf8"), /Scenarios written to/);
+
+  // progress.txt holds every transcript line as it happened; the side-by-side ones are tagged with their side.
+  const progress = (await readFile(join(outDir, "progress.txt"), "utf8")).trimEnd().split("\n");
+  assert.equal(progress.length, result!.transcript.length);
+  const untagged = progress.map((l) => l.replace(/^\[(attacker|rules|prover)\] /, ""));
+  assert.deepEqual([...untagged].sort(), [...result!.transcript].sort(), "the same lines, in the order they happened");
+  for (const tag of ["attacker", "rules", "prover"]) assert.ok(progress.some((l) => l.startsWith(`[${tag}] `)), `lines tagged [${tag}]`);
+  assert.equal(progress.at(-1), result!.transcript.at(-1));
   assert.ok(!JSON.stringify(recording).includes(SECRET), "the Recording must not hold the key");
 
   const replayed = await runAudit(recording.contract.path, replayPorts(recording), auditOptionsFrom(recording.settings));
   assert.deepEqual(replayed.transcript, result!.transcript);
   assert.deepEqual(replayed.rules, result!.rules);
+  assert.deepEqual(replayed.conflicts, result!.conflicts);
 });
+
+const EXPLANATION =
+  "The Scenario lowered alice's recorded balance by 1 NEAR while the transfer to the missing account failed, so nobody received it. The model treats withdraw as one step in which the transfer always lands.";
 
 // ---- Spend cap and retries, from Recordings ----
 

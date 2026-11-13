@@ -45,6 +45,22 @@
       "axioms": [
         "sorryAx"
       ]
+    },
+    "after-refinement": {
+      "ok": false,
+      "errors": "property_R1.lean:66:2: error: Invalid alternative name `withdraw`: Expected `withdrawStart` or `withdrawResolve`\nproperty_R1.lean:59:2: error: Alternative `withdrawStart` has not been provided\nproperty_R1.lean:59:2: error: Alternative `withdrawResolve` has not been provided\n'property_R1' depends on axioms: [propext, sorryAx, Quot.sound]",
+      "axioms": [
+        "propext",
+        "sorryAx",
+        "Quot.sound"
+      ]
+    },
+    "refined-statement": {
+      "ok": true,
+      "errors": "",
+      "axioms": [
+        "sorryAx"
+      ]
     }
   }
 }

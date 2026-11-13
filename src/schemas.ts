@@ -8,18 +8,6 @@ export const scoutMap: Check<ScoutMap> = object({
   standingNote: str,
 });
 
-const expr: Check<Expr> = variant<Expr>({
-  slot: object({ slot: str, when: oneOf("before", "after") }),
-  number: object({ number: amount }),
-  op: (v, p) => object({ op: oneOf("add", "sub"), left: expr, right: expr })(v, p),
-});
-
-const condition: Check<Condition> = variant<Condition>({
-  compare: object({ compare: oneOf("<", "<=", "==", "!=", ">=", ">"), left: expr, right: expr }),
-  all: (v, p) => object({ all: array(condition, { min: 1 }) })(v, p),
-  any: (v, p) => object({ any: array(condition, { min: 1 }) })(v, p),
-});
-
 /** A reference to the call under test, or a literal account name. */
 const reference: Check<string> = (v, p) => {
   const s = str(v, p);
@@ -28,6 +16,19 @@ const reference: Check<string> = (v, p) => {
   }
   return s;
 };
+
+const expr: Check<Expr> = variant<Expr>({
+  slot: object({ slot: str, when: oneOf("before", "after") }),
+  number: object({ number: amount }),
+  account: object({ account: reference }),
+  op: (v, p) => object({ op: oneOf("add", "sub"), left: expr, right: expr })(v, p),
+});
+
+const condition: Check<Condition> = variant<Condition>({
+  compare: object({ compare: oneOf("<", "<=", "==", "!=", ">=", ">"), left: expr, right: expr }),
+  all: (v, p) => object({ all: array(condition, { min: 1 }) })(v, p),
+  any: (v, p) => object({ any: array(condition, { min: 1 }) })(v, p),
+});
 
 const slotBinding: Check<SlotBinding> = variant<SlotBinding>({
   view: object({
@@ -73,11 +74,24 @@ function checkSlotsUsed(r: Rule): void {
     if ("op" in e) (visitExpr(e.left), visitExpr(e.right));
   };
   const balances = new Set(r.check.slots.filter((s) => s.kind === "balance").map((s) => s.name));
+  const views = new Set(r.check.slots.filter((s) => s.kind === "view").map((s) => s.name));
+  const isAccount = (e: Expr) => "account" in e;
+  const insideOp = (e: Expr): boolean => "op" in e && (isAccount(e.left) || isAccount(e.right) || insideOp(e.left) || insideOp(e.right));
   const readsBalance = (e: Expr): boolean => ("slot" in e ? balances.has(e.slot) : "op" in e ? readsBalance(e.left) || readsBalance(e.right) : false);
   const visit = (c: Condition): void => {
     if ("compare" in c) {
       visitExpr(c.left);
       visitExpr(c.right);
+      if (insideOp(c.left) || insideOp(c.right)) throw new InvalidAnswer(`rule ${r.id}: an account cannot be added or subtracted`);
+      if (isAccount(c.left) || isAccount(c.right)) {
+        const other = isAccount(c.left) ? c.right : c.left;
+        if (c.compare !== "==" && c.compare !== "!=") {
+          throw new InvalidAnswer(`rule ${r.id}: an account can only be compared with "==" or "!=", not "${c.compare}"`);
+        }
+        if (!isAccount(other) && !("slot" in other && views.has(other.slot))) {
+          throw new InvalidAnswer(`rule ${r.id}: an account can only be compared with another account or a view slot that returns an account`);
+        }
+      }
       // A wallet moves by gas whenever its owner signs a call, so an exact comparison of one is never meaningful.
       if ((c.compare === "==" || c.compare === "!=") && (readsBalance(c.left) || readsBalance(c.right))) {
         throw new InvalidAnswer(
@@ -104,6 +118,12 @@ export const formalizationAnswer =
     if (missing.length > 0) throw new InvalidAnswer(`no Property for ${missing.join(", ")}; write one for every Rule`);
     return out;
   };
+
+/** The Rules agent's Refinement: a whole new Formalization and the Property of the one Rule in Conflict. */
+export const refinementAnswer: Check<{ formalization: string; statement: string }> = object({ formalization: str, statement: str });
+
+/** The wording of a Conflict's explanation. */
+export const conflictExplanation: Check<{ explanation: string }> = object({ explanation: str });
 
 /** The Prover's answer: a proof body only. */
 export const proverAnswer: Check<{ proof: string }> = object({ proof: str });
