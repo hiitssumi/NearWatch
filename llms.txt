@@ -1,0 +1,26 @@
+# NearWatch
+
+> NearWatch audits a NEAR smart contract (Rust, near-sdk) with six AI agents. An Attacker breaks Rules in a local NEAR sandbox, a Prover proves them in Lean 4, and a Referee, which is ordinary code, re-runs both and catches Conflicts. Agents are NEAR testnet accounts, paid by plain transfers for evidence that survives. The demo vault's bug was planted. `npm run replay` shows a whole real Audit with only Node, no keys and no network.
+
+## Docs
+
+- [README](https://github.com/hiitssumi/NearWatch/blob/main/README.md): what it is, the honest limits, and six "do X, see Y" steps from replay to a live Audit.
+- [AGENTS.md](https://github.com/hiitssumi/NearWatch/blob/main/AGENTS.md): for coding agents: commands with their cost, network use and success output; safety rules; the repository layout.
+- [GLOSSARY.md](https://github.com/hiitssumi/NearWatch/blob/main/GLOSSARY.md): exact meanings of Audit, Rule, Property, Formalization, Scenario, Finding, Conflict, Refinement, Counterexample, Recording, Fee and Payout.
+- [ADR 0001](https://github.com/hiitssumi/NearWatch/blob/main/docs/adr/0001-first-formalization-is-coarse.md): why the first Formalization treats each call as one step, which is what lets a proof and an exploit disagree.
+
+## Code
+
+- [src/domain.ts](https://github.com/hiitssumi/NearWatch/blob/main/src/domain.ts): the domain types.
+- [src/audit.ts](https://github.com/hiitssumi/NearWatch/blob/main/src/audit.ts): the Audit runner.
+- [src/referee.ts](https://github.com/hiitssumi/NearWatch/blob/main/src/referee.ts): the Referee, with no LLM in its decisions.
+- [rust/vaults/buggy/src/lib.rs](https://github.com/hiitssumi/NearWatch/blob/main/rust/vaults/buggy/src/lib.rs): the demo vault with the planted bug.
+
+## Evidence
+
+- [recordings/demo-buggy-vault.json](https://github.com/hiitssumi/NearWatch/blob/main/recordings/demo-buggy-vault.json): the demo Audit's Recording, which `npm run replay` plays.
+- [deployments/testnet.json](https://github.com/hiitssumi/NearWatch/blob/main/deployments/testnet.json): both vaults on NEAR testnet, with the transactions that show the bug.
+
+## Optional
+
+- [Issue tracker](https://github.com/hiitssumi/NearWatch/tree/main/.scratch/nearwatch-audit): the spec and the tickets the project was built from.

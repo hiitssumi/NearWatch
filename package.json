@@ -12,6 +12,7 @@
     "check-models": "node src/cli/check-models.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
+    "check": "npm run --silent typecheck && npm test",
     "record-lean": "node test/lean/record-outcomes.ts",
     "scenario": "node src/cli/run-scenario.ts",
     "setup-accounts": "node src/cli/setup-accounts.ts",

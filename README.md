@@ -10,6 +10,7 @@ NearWatch audits a NEAR smart contract with six agents. An Attacker tries to bre
 - **Results are promised for the demo vault only.** A run on any other contract is an experiment.
 - **NearWatch is independent.** It is not affiliated with NEAR AI, and it is not a rival to NEAR's own security work.
 - **The code was written with AI coding agents** (Claude Code), directed and reviewed by one builder.
+- **Working on it with a coding agent?** Point it at [`AGENTS.md`](AGENTS.md): commands with their cost and network use, what an agent must never run, the layout, and one check (`npm run check`). A summary for LLMs is in [`llms.txt`](llms.txt).
 
 ## 1. Replay the demo Audit on a bare machine
 
