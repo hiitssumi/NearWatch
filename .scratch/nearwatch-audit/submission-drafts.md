@@ -4,21 +4,31 @@ Drafts for the builder to edit. The builder records the video, publishes the pos
 
 Checked on 14 Nov 2026 against the live https://nearhackathon.com/HACKATHON.md: the deadline is still 2026-11-14T23:59:00Z (05:29 on Sunday 15 Nov, Indian time), one submission per repository, mistakes fixed by a change request. The repository is public, `main` is its default branch and holds everything, and GitHub shows the MIT licence.
 
-## 1. Video script (about 1 minute 50 seconds)
+## 1. Video script (about 1 minute 57 seconds)
 
-A recording of the terminal, from the repository folder. Make the window wide (at least 170 columns) and the font large enough to read. `npm run replay` prints the same 220 lines every time, so each command below shows one part of it. Speak the lines, or put them on screen as captions.
+A recording of the terminal, from the repository folder, then three NEAR testnet pages in a browser. Make the window wide (at least 170 columns) and the font large enough to read. `npm run replay` prints the same 220 lines every time, so each command below shows one part of it. Speak the lines, or put them on screen as captions.
+
+Before recording, open the three testnet pages in browser tabs, in this order, and let each finish loading (the explorer may show a short "checking your browser" page the first time):
+
+1. The buggy vault's withdraw: https://testnet.nearblocks.io/txns/7FJA7MVMqrQJWzxEYqhTsU1MczeLcvaVaxbzbMNC1S8
+2. The fixed vault's withdraw: https://testnet.nearblocks.io/txns/3f8ssws5VDvJLVvY6gGur16FpesewzES8LtsW6Avyio9
+3. The Attacker's Payout: https://testnet.nearblocks.io/txns/GvHZ9QoWvWjkJPctWg18HSiiyY8s2GeVmEhrzwmCXvkk
 
 | Time | Type this | Say this |
 | --- | --- | --- |
 | 0:00 | (nothing yet) | "An AI audit of a smart contract gives you claims you can't check. NearWatch makes its agents back every claim with evidence, and catches them when their evidence disagrees." |
 | 0:10 | `npm run --silent replay \| sed -n '4,25p' \| cut -c1-170` | "This replays one real Audit of a small NEAR vault. Six agents. The Fee, one testnet NEAR, is collected first. The Scout maps the money. The Rules agent writes five Rules. R2 says a withdraw must only take what the receiver actually gets." |
-| 0:35 | `npm run --silent replay \| sed -n '129,160p' \| cut -c1-170` | "The Attacker withdrew to an account that doesn't exist. The transfer failed, and alice's balance still dropped to zero. The Referee re-ran it: a Finding. But the Prover also proved R2 in Lean, and the Referee accepted that proof. Both can't be right. That's a Conflict. The Finding wins, and the Prover's pay for this Rule passes to the Attacker." |
-| 1:05 | `npm run --silent replay \| sed -n '161,190p' \| cut -c1-170` | "The proof was true of a description of the contract that was too simple: it treated withdraw as one step. So the description is refined, and the old proof no longer passes. Then the Prover finds a counterexample that Lean confirms, on the same path the Attacker took. Now they agree on why the Rule is broken." |
-| 1:30 | `npm run --silent replay \| sed -n '191,220p' \| cut -c1-170` | "Verdicts: withdraw is Broken, the other four Rules are Proven. And the Payouts: every agent is a NEAR account, paid on testnet. Each line is a real transaction." |
-| 1:42 | Open `https://testnet.nearblocks.io/txns/GvHZ9QoWvWjkJPctWg18HSiiyY8s2GeVmEhrzwmCXvkk` in a browser | "This is the Attacker being paid the share the Prover lost. On NEAR, agents are accounts, so they can be paid for evidence that survives, not for claims." |
-| 1:50 | (end) | |
+| 0:33 | `npm run --silent replay \| sed -n '129,160p' \| cut -c1-170` | "The Attacker withdrew to an account that doesn't exist. The transfer failed, and alice's balance still dropped to zero. The Referee re-ran it: a Finding. But the Prover also proved R2 in Lean, and the Referee accepted that proof. Both can't be right. That's a Conflict. The Finding wins, and the Prover's pay for this Rule passes to the Attacker." |
+| 1:02 | `npm run --silent replay \| sed -n '161,190p' \| cut -c1-170` | "The proof was true of a description too simple: it treated withdraw as one step. The description is refined, the old proof fails, and the Prover finds a counterexample Lean confirms, on the Attacker's own path." |
+| 1:20 | `npm run --silent replay \| sed -n '191,220p' \| cut -c1-170` | "Verdicts: withdraw is Broken, the other four Proven. Every agent is a NEAR account, paid on testnet. Each line is a real transaction." |
+| 1:30 | Browser, tab 1 (buggy vault's withdraw) | "Both vaults are on testnet too. The bug, on chain: the transfer to a missing account failed, and the vault still took 0.1 NEAR off the balance." |
+| 1:41 | Tab 2 (fixed vault's withdraw) | "The fixed vault: same failure, balance put back." |
+| 1:46 | Tab 3 (the Attacker's Payout) | "And this is the Attacker being paid the share the Prover lost. On NEAR, agents are accounts, so they can be paid for evidence that survives, not for claims." |
+| 1:57 | (end) | |
 
 Say once, early or in the post: the vault was written for this project and its bug was planted.
+
+What each testnet page shows: tab 1 is a failed transaction, with the failed receipt to `no-such-account.nearwatch-demo.testnet` (`AccountDoesNotExist`). The lost balance is the vault's ledger, which the explorer page does not show; README step 4 and `deployments/testnet.json` give the before and after (0.1 NEAR, then 0). Tab 2 shows the same failed receipt, but the transaction succeeds and returns `false` from the callback that restored the balance. Tab 3 is a 0.12 NEAR transfer from `nearwatch-demo.testnet` to `attacker.nearwatch-demo.testnet`.
 
 ## 2. Post on X
 
