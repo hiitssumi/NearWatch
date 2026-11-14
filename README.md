@@ -50,7 +50,7 @@ You see the fixed vault's Audit: `== Verdicts ==` with all five Rules `Proven`, 
 npm test
 ```
 
-You see `ℹ fail 0`. The fast tests replay Recordings and need only Node. The slow tests (`*.slow.test.ts`) use the real sandbox, a local NEAR node and Lean, and are skipped when Rust, the built sandbox or Lean is missing.
+You see `ℹ fail 0`. The fast tests replay Recordings and need only Node. The slow tests (`*.slow.test.ts`) use the real sandbox, a local NEAR node and Lean, and are skipped when Rust, the built sandbox or Lean is missing; with them the run takes a few minutes.
 
 ```bash
 npm run typecheck
@@ -69,9 +69,25 @@ cargo test
 
 The first run builds both vaults to WASM and downloads the NEAR sandbox. You see the vault tests pass, among them `buggy_vault_loses_the_balance_when_the_transfer_fails` and `fixed_vault_restores_the_balance_when_the_transfer_fails`: the planted bug, confirmed on the real contract before any agent looks for it.
 
-## 4. Run a live Audit
+## 4. Replay with verification
 
-You need everything above, plus Lean 4 (install [elan](https://github.com/leanprover/elan), then `elan default stable`; no Mathlib), the sandbox harness, and a NEAR AI Cloud key.
+This shows the Recording is not fiction. You need Rust (step 3) and Lean 4 (install [elan](https://github.com/leanprover/elan), then `elan default stable`; no Mathlib). No keys.
+
+```bash
+npm run replay -- --verify
+```
+
+Every Scenario in the Recording is re-run in a real local sandbox, and every Lean file is re-checked by the real Lean. Each result is compared with what the Recording holds; only the LLM answers are taken from it. The first run builds the harness and the vault, then it takes about two and a half minutes. You see one line per check, such as `re-ran Scenario S4 (run #4 of 26) in the sandbox: matches the Recording`, then the transcript, then:
+
+```
+VERIFIED: 26 Scenario runs and 19 Lean checks were re-run for real, and every one matches the Recording.
+```
+
+If any re-run differs, it stops with `VERIFICATION FAILED:` and names the Scenario or proof and what differed. Try it: copy `recordings/demo-buggy-vault.json`, change a `"ruleCheckTrue"` value in the copy, and run `npm run replay -- <your copy> --verify`. Without Rust or Lean, it says which is missing and how to install it.
+
+## 5. Run a live Audit
+
+You need everything above, plus the sandbox harness and a NEAR AI Cloud key.
 
 ```bash
 (cd rust && cargo build --release -p nearwatch-harness)

@@ -19,7 +19,7 @@ import { LocalSandbox, VAULT_SETUP } from "./sandbox.ts";
 import { loadSettings, publicSettings, type Settings } from "./settings.ts";
 
 /** The local sandbox and the local Lean install. Throws before any LLM call if Lean is missing. */
-function localToolchain(): Toolchain {
+export function localToolchain(): Toolchain {
   const sandbox = new LocalSandbox(VAULT_SETUP);
   const lean = new LocalLean();
   return {

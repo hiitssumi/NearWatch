@@ -207,6 +207,11 @@ Each module below has a small interface and hides the work behind it.
 - Replay hands each agent its own exchanges in order, and Scenario runs and Lean checks each in their own order. The Attacker runs only Scenarios and the Prover's side only Lean checks, so the part that runs side by side replays exactly, however its calls interleaved in the live run.
 - A live Audit may continue an earlier Recording of the same contract source: the earlier answers and outcomes are replayed in the same per-agent and per-kind orders, and only what the Recording does not hold goes to the live model and toolchain. This runs a step added after a Recording was made without paying for the whole Audit again. The new Recording holds everything, replays on its own, and states what it continued from and how many exchanges and outcomes were replayed and how many were live.
 - Replay with verification uses the real toolchain and compares each outcome with the recorded one. Any difference fails the replay with a message naming the Scenario or proof.
+  - It is a flag on the replay command (`--verify`). The LLM answers and the payment hashes still come from the Recording.
+  - A Scenario's re-run must give the same observations, failed receipts and Rule check result (or the same reason it could not be run). A Lean re-check must give the same acceptance, the same error text and the same axioms; how long it took is not compared.
+  - The first difference is final: nothing more is re-run, and it is reported even though the agents treat a Scenario that throws as one that "could not be run" and would carry on.
+  - It refuses to start if the contract at the recorded path is no longer the source the Recording audited, and it fails if the Recording holds outcomes the replay never asked for.
+  - When Rust or Lean is missing it says which, and how to install it, before anything runs.
 - One checked Recording of the demo vault ships in the repository as the default replay.
 
 ### Output
