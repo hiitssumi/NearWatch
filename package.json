@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "record-lean": "node test/lean/record-outcomes.ts",
     "scenario": "node src/cli/run-scenario.ts",
-    "setup-accounts": "node src/cli/setup-accounts.ts"
+    "setup-accounts": "node src/cli/setup-accounts.ts",
+    "deploy-vaults": "node src/cli/deploy-vaults.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

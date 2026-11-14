@@ -157,6 +157,9 @@ export class NearPayments implements Payer {
   }
 }
 
+/** Whether `account` is a named testnet account (its name ends in .testnet). */
+export const isTestnetAccount = (account: string) => /^[a-z0-9_-]+(\.[a-z0-9_-]+)*\.testnet$/.test(account);
+
 /**
  * The testnet payer, from settings: the only way the commands make a real payer. It refuses a parent account
  * that is not a testnet account, and (before its first transaction) an RPC that is not on testnet.
@@ -167,7 +170,7 @@ export function testnetPayer(settings: Pick<Settings, "parentAccount" | "parentK
   if (!settings.parentAccount || !settings.parentKey) {
     throw new PaymentError('Settings must give both "parentAccount" and "parentKey" for real Payouts, or neither to run without them.');
   }
-  if (!/^[a-z0-9_-]+(\.[a-z0-9_-]+)*\.testnet$/.test(settings.parentAccount)) {
+  if (!isTestnetAccount(settings.parentAccount)) {
     throw new PaymentError(`Payments are sent on testnet only: "${settings.parentAccount}" is not a testnet account (its name must end in .testnet).`);
   }
   return new NearPayments({

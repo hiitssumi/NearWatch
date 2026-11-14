@@ -33,6 +33,6 @@ What was built:
 - **Tests.**
   - `test/verify.test.ts` (fast, with a stand-in toolchain): a full match; an altered Scenario, and one recorded as not run; an altered proof and an extra axiom; outcomes never asked for; `firstDifference`; and a machine with only Node, where `--verify` names both missing tools and plain replay still works.
   - `test/verify.slow.test.ts` (the real sandbox and Lean): the demo Recording passes, and it fails, naming the Scenario or the proof, when a recorded sandbox outcome or Lean outcome is altered.
-- README step 4, "Replay with verification", and the spec's "Recording and replay".
+- README step 4 (step 5 since ticket 19), "Replay with verification", and the spec's "Recording and replay".
 
 All 116 tests pass with Rust and Lean installed (none skipped).

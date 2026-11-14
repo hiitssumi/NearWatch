@@ -83,7 +83,8 @@ function buildHarness(): Promise<string> {
   return harnessBuild;
 }
 
-function buildContract(contractPath: string): Promise<string> {
+/** Builds the crate holding `contractPath` to wasm (once per process) and gives the wasm file's path. */
+export function buildContract(contractPath: string): Promise<string> {
   return crateDir(contractPath).then((dir) => {
     let build = wasmBuilds.get(dir);
     if (!build) {

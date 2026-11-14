@@ -61,11 +61,11 @@ export class NearRpc {
   // Queries read the latest block, not the last final one: a final block lags a transaction that has just
   // run, so it would show a stale balance and a nonce that has already been used.
 
-  /** An account's balance, or null when the account does not exist. */
-  async account(accountId: string): Promise<{ yoctoNear: bigint } | null> {
+  /** An account's balance and the hash of its contract code, or null when the account does not exist. */
+  async account(accountId: string): Promise<{ yoctoNear: bigint; codeHash: string } | null> {
     try {
       const r = await this.call("query", { request_type: "view_account", finality: "optimistic", account_id: accountId });
-      return { yoctoNear: BigInt(String(r.amount)) };
+      return { yoctoNear: BigInt(String(r.amount)), codeHash: String(r.code_hash) };
     } catch (e) {
       if (e instanceof NearRpcError && (e.cause_ === "UNKNOWN_ACCOUNT" || e.cause_ === "UNKNOWN")) return null;
       throw e;
@@ -85,8 +85,47 @@ export class NearRpc {
 
   /** Sends a signed transaction and waits for it to run. Throws with the chain's reason when it fails. */
   async send(signed: Uint8Array): Promise<void> {
+    const { failure } = await this.execute(signed);
+    if (failure) throw new NearRpcError(`the transaction failed on chain: ${failure}`);
+  }
+
+  /**
+   * Sends a signed transaction and waits for it and every receipt it caused to run. Does not throw when it
+   * fails on chain: `failure` is the transaction's own failure, `receiptFailures` every receipt that failed.
+   */
+  async execute(signed: Uint8Array): Promise<{ failure: string | null; receiptFailures: string[]; value: string | null; blocks: string[] }> {
     const r = await this.call("broadcast_tx_commit", [Buffer.from(signed).toString("base64")]);
-    const status = r.status as Record<string, unknown> | undefined;
-    if (status && "Failure" in status) throw new NearRpcError(`the transaction failed on chain: ${JSON.stringify(status.Failure).slice(0, 400)}`);
+    const status = (r.status ?? {}) as Record<string, unknown>;
+    const show = (f: unknown) => JSON.stringify(f).slice(0, 400);
+    const receipts = (r.receipts_outcome ?? []) as { block_hash: string; outcome: { status: Record<string, unknown> } }[];
+    return {
+      failure: "Failure" in status ? show(status.Failure) : null,
+      receiptFailures: receipts.filter((o) => "Failure" in o.outcome.status).map((o) => show(o.outcome.status.Failure)),
+      value: typeof status.SuccessValue === "string" ? Buffer.from(status.SuccessValue, "base64").toString("utf8") : null,
+      /** Every block the transaction or one of its receipts ran in. */
+      blocks: [...new Set(receipts.map((o) => o.block_hash))],
+    };
+  }
+
+  /** The height of a block, by its hash. */
+  async blockHeight(blockHash: string): Promise<number> {
+    const r = await this.call("block", { block_id: blockHash });
+    return Number((r.header as { height: number }).height);
+  }
+
+  /**
+   * Calls a contract's view method and parses its JSON answer. With `blockHeight`, reads the state as of that
+   * block; otherwise the latest. An RPC that spreads calls over several nodes can answer "latest" from one that
+   * has not seen a transaction that just ran, so a read that must follow a transaction names its block.
+   */
+  async view(accountId: string, method: string, args: unknown, blockHeight?: number): Promise<unknown> {
+    const r = await this.call("query", {
+      request_type: "call_function",
+      ...(blockHeight === undefined ? { finality: "optimistic" } : { block_id: blockHeight }),
+      account_id: accountId,
+      method_name: method,
+      args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
+    });
+    return JSON.parse(Buffer.from(r.result as number[]).toString("utf8"));
   }
 }

@@ -69,7 +69,28 @@ cargo test
 
 The first run builds both vaults to WASM and downloads the NEAR sandbox. You see the vault tests pass, among them `buggy_vault_loses_the_balance_when_the_transfer_fails` and `fixed_vault_restores_the_balance_when_the_transfer_fails`: the planted bug, confirmed on the real contract before any agent looks for it.
 
-## 4. Replay with verification
+## 4. See both vaults on NEAR testnet
+
+Both vaults are deployed on NEAR testnet, and the planted bug has been shown there with real calls. You need only a browser. Every hash below is also in `deployments/testnet.json`.
+
+| | Buggy vault | Fixed vault |
+| --- | --- | --- |
+| Account | [`buggy-vault.nearwatch-demo.testnet`](https://testnet.nearblocks.io/address/buggy-vault.nearwatch-demo.testnet) | [`fixed-vault.nearwatch-demo.testnet`](https://testnet.nearblocks.io/address/fixed-vault.nearwatch-demo.testnet) |
+| Deployed in | [`26mMWkuB…`](https://testnet.nearblocks.io/txns/26mMWkuBtg8EtjbjRvV7R1kAuvkytgNYrXmWPXLKaaxv) | [`81uJNjkE…`](https://testnet.nearblocks.io/txns/81uJNjkEc1vEYx7XAAGQxQG7wnfV8VDg4tqri2eZMqG4) |
+| Deposit of 0.1 NEAR | [`F5AHxD4u…`](https://testnet.nearblocks.io/txns/F5AHxD4uM45urEcqdWA6TMRDsexc95sn1FGpPHimhRib) | [`9eBnPVJN…`](https://testnet.nearblocks.io/txns/9eBnPVJN7jmypUrHTkWpciwqjsANez5cYrZPxHVHKdC4) |
+| Withdraw of 0.1 NEAR to `no-such-account.nearwatch-demo.testnet` | [`7FJA7MVM…`](https://testnet.nearblocks.io/txns/7FJA7MVMqrQJWzxEYqhTsU1MczeLcvaVaxbzbMNC1S8): the transfer fails with `AccountDoesNotExist`, and the depositor's recorded balance drops by 0.1 NEAR anyway | [`3f8ssws5…`](https://testnet.nearblocks.io/txns/3f8ssws5VDvJLVvY6gGur16FpesewzES8LtsW6Avyio9): the same transfer fails, the callback returns `false` and restores the balance |
+
+On the buggy vault the NEAR never left: it came back to the vault, but the vault's ledger no longer owes it to anyone. The Audits do not use these deployments; the Attacker runs every Scenario in a local sandbox, so an Audit sends nothing to testnet except its payments.
+
+To deploy the vaults under your own testnet account, put it in settings as for [paying on testnet](#6-run-a-live-audit) (step 6), then, with Rust installed (step 3):
+
+```bash
+npm run deploy-vaults
+```
+
+You see each vault built and deployed to `buggy-vault.<name>.testnet` and `fixed-vault.<name>.testnet` (1.5 testnet NEAR each, for storage), then the same deposit and withdrawal on each with their transaction hashes, ending `0.1 NEAR lost (the planted bug)` for the buggy vault and `the balance was restored: nothing lost` for the fixed one. Run it again and it leaves code that is already deployed alone and repeats the demonstration. It refuses any account and any RPC that is not on testnet.
+
+## 5. Replay with verification
 
 This shows the Recording is not fiction. You need Rust (step 3) and Lean 4 (install [elan](https://github.com/leanprover/elan), then `elan default stable`; no Mathlib). No keys.
 
@@ -85,7 +106,7 @@ VERIFIED: 26 Scenario runs and 19 Lean checks were re-run for real, and every on
 
 If any re-run differs, it stops with `VERIFICATION FAILED:` and names the Scenario or proof and what differed. Try it: copy `recordings/demo-buggy-vault.json`, change a `"ruleCheckTrue"` value in the copy, and run `npm run replay -- <your copy> --verify`. Without Rust or Lean, it says which is missing and how to install it.
 
-## 5. Run a live Audit
+## 6. Run a live Audit
 
 You need everything above, plus the sandbox harness and a NEAR AI Cloud key.
 
@@ -178,7 +199,7 @@ Paying the agents through NEAR Intents instead of plain testnet transfers. Inten
 - **Rust**: `near-sdk` 5.30 (the vaults), `near-workspaces` 0.24 and the NEAR sandbox (the vault tests and the Scenario harness), `tokio`, `serde`, `serde_json`, `serde_path_to_error`, and `cargo-near` 0.23 to build.
 - **Lean 4** (4.35), with no packages and no Mathlib.
 - **NEAR AI Cloud** for every LLM call: `z-ai/glm-5.3` (Scout, Rules agent, Referee's wording, Reporter), `deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated` (Attacker), `anthropic/claude-opus-5-5` (Prover).
-- **NEAR testnet** for Payouts.
+- **NEAR testnet** for Payouts and for the deployed demo vaults.
 - **AI coding agents**: the code, tests and documents were written with Claude Code.
 
 ## Licence

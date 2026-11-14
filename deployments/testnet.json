@@ -1,0 +1,40 @@
+{
+  "network": "testnet",
+  "parent": "nearwatch-demo.testnet",
+  "vaults": {
+    "buggy": {
+      "account": "buggy-vault.nearwatch-demo.testnet",
+      "explorer": "https://testnet.nearblocks.io/address/buggy-vault.nearwatch-demo.testnet",
+      "deployHash": "26mMWkuBtg8EtjbjRvV7R1kAuvkytgNYrXmWPXLKaaxv"
+    },
+    "fixed": {
+      "account": "fixed-vault.nearwatch-demo.testnet",
+      "explorer": "https://testnet.nearblocks.io/address/fixed-vault.nearwatch-demo.testnet",
+      "deployHash": "81uJNjkEc1vEYx7XAAGQxQG7wnfV8VDg4tqri2eZMqG4"
+    }
+  },
+  "demonstrations": [
+    {
+      "vault": "buggy",
+      "account": "buggy-vault.nearwatch-demo.testnet",
+      "depositHash": "F5AHxD4uM45urEcqdWA6TMRDsexc95sn1FGpPHimhRib",
+      "withdrawHash": "7FJA7MVMqrQJWzxEYqhTsU1MczeLcvaVaxbzbMNC1S8",
+      "receiver": "no-such-account.nearwatch-demo.testnet",
+      "ledgerBefore": "100000000000000000000000",
+      "ledgerAfter": "0",
+      "transferFailed": true,
+      "balanceLost": true
+    },
+    {
+      "vault": "fixed",
+      "account": "fixed-vault.nearwatch-demo.testnet",
+      "depositHash": "9eBnPVJN7jmypUrHTkWpciwqjsANez5cYrZPxHVHKdC4",
+      "withdrawHash": "3f8ssws5VDvJLVvY6gGur16FpesewzES8LtsW6Avyio9",
+      "receiver": "no-such-account.nearwatch-demo.testnet",
+      "ledgerBefore": "200000000000000000000000",
+      "ledgerAfter": "200000000000000000000000",
+      "transferFailed": true,
+      "balanceLost": false
+    }
+  ]
+}

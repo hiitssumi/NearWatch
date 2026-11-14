@@ -102,7 +102,7 @@ A reviewer who has no keys and no toolchain can replay a recorded Audit and see 
 
 - One program in TypeScript on Node 24 runs the Audit. A separate Rust workspace holds the vaults and the sandbox harness. Lean files are plain files checked by the local Lean install, with no Lean package dependencies.
 - An Audit runs in this order: Scout, Rules agent, then the Attacker and the Prover side by side (the Rules agent writes the Formalization on the Prover's side, before the Prover starts), then Referee, Reporter. The two sides need nothing from each other. Each side's transcript is held back and printed in a fixed order, so the transcript does not depend on which side finished first. A Conflict sends control back to the Rules agent for a Refinement, then to the Referee again.
-- Three commands: one runs a live Audit on a contract path, one replays a Recording (with a flag for verification), one sets up the testnet accounts.
+- Four commands: one runs a live Audit on a contract path, one replays a Recording (with a flag for verification), one sets up the testnet accounts, one deploys the two vaults to testnet.
 - Only Rust near-sdk contracts are accepted. Anything else is refused with a clear message before any LLM call.
 
 ### Modules
@@ -199,6 +199,7 @@ Each module below has a small interface and hides the work behind it.
 - Both vaults keep NEAR attached to a call of a read-only method (such as `balance_of`), credited to nobody: near-sdk rejects attached NEAR only on methods that change state, and a read-only method cannot check for it without breaking ordinary view calls. This is accepted as real NEAR behaviour, not part of the planted bug. If an Audit of the fixed vault finds it, the result says so plainly.
 - Rule 1: a user's recorded balance only goes down by an amount that user actually received. Rule 2: the owner cannot reduce any user's balance.
 - This description is never given to the Attacker.
+- Both vaults are also deployed on NEAR testnet under the builder's parent account (`buggy-vault.<parent>`, `fixed-vault.<parent>`), by a fourth command that refuses any account or RPC not on testnet. The same command shows the planted bug there with real calls: a deposit, then a withdrawal to an account that does not exist. Audits do not use these deployments: the Attacker still runs every Scenario in a local sandbox.
 
 ### Recording and replay
 
